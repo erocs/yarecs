@@ -1,0 +1,335 @@
+# Unreal Engine 5 — Security-focused scan rules
+#
+# Usage:
+#   cish-scanner --config examples/unreal_engine5.toml \
+#                --extensions h,cpp \
+#                Source/
+#
+# ── Architecture notes ────────────────────────────────────────────────────────
+#
+# UE5 Server RPCs are declared in .h files:
+#   UFUNCTION(Server, Reliable [, WithValidation])
+#   void MyRPC(float Value);
+#
+# And implemented in .cpp files:
+#   void AMyActor::MyRPC_Implementation(float Value) { … }
+#   bool AMyActor::MyRPC_Validate(float Value)       { return …; }  ← optional
+#
+# The rules below target .h class bodies where the UFUNCTION macros live.
+# Cross-file analysis (pairing _Implementation to _Validate across .h/.cpp) is
+# not yet supported; those cases are covered by the WithValidation check instead.
+#
+# ── Chain relationship reference ──────────────────────────────────────────────
+#
+#   after / before               — relative to trigger within the same scope body
+#   anywhere_in_method           — anywhere in the same scope body
+#   anywhere_in_class            — anywhere in the nearest enclosing class body
+#   anywhere_in_namespace        — anywhere in the nearest enclosing namespace body
+#   anywhere_in_statement        — within the single statement containing the trigger
+#                                  (bounded by the nearest `;`/`{`/`}` on each side,
+#                                  skipping those inside comments or string literals)
+#
+# Add  negate = true  to any chain entry to invert the condition (fires when
+# the pattern is *absent* from the search range).
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Server RPC identification
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Informational: enumerate every Server RPC declaration so reviewers know the
+# full attack surface even when no other rules fire.
+[[rules]]
+name        = "ue5_server_rpc"
+pattern     = 'UFUNCTION\s*\([^)]*\bServer\b'
+scope       = "**"
+search      = "code"
+severity    = "info"
+message     = "Server RPC declaration — verify all client-supplied arguments are range/type checked"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Server RPC without WithValidation
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Fires on each Server RPC declaration that does not have "WithValidation"
+# inside its own UFUNCTION(…) argument list.  Uses anywhere_in_statement so
+# that a class with a mix of validated and unvalidated RPCs gets a finding
+# only on the specific declaration(s) that are missing the keyword.
+#
+# Fix: add "WithValidation" to the UFUNCTION macro and implement
+#   bool AMyActor::MyRPC_Validate(…) { /* range-check inputs */ return true; }
+[[rules]]
+name        = "ue5_server_rpc_no_validation"
+pattern     = 'UFUNCTION\s*\([^)]*\bServer\b'
+scope       = "**"
+search      = "code"
+severity    = "error"
+message     = "Server RPC missing WithValidation in this UFUNCTION declaration — the engine cannot enforce input validation; add WithValidation and implement _Validate"
+chain       = [
+    { pattern = "WithValidation", relationship = "anywhere_in_statement", negate = true },
+]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Path traversal via FFilePath / FDirectoryPath
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Fires in any method that uses FFilePath or FDirectoryPath without a call to
+# FPaths::ConvertRelativePathToFull anywhere in the same method body.
+#
+# Without path canonicalisation a client-controlled string such as
+#   "../../Saved/Config/Windows/Engine.ini"
+# can escape the intended directory.
+#
+# Fix: before using the path, call
+#   FString Safe = FPaths::ConvertRelativePathToFull(UserPath);
+# and validate that Safe still falls under the expected root directory.
+[[rules]]
+name        = "ue5_filepath_no_canonicalisation"
+pattern     = '\bFFilePath\b|\bFDirectoryPath\b'
+scope       = "**::*"
+search      = "code"
+severity    = "error"
+message     = "FFilePath / FDirectoryPath used without FPaths::ConvertRelativePathToFull — path traversal via '..' is possible"
+chain       = [
+    { pattern = "FPaths::ConvertRelativePathToFull", relationship = "anywhere_in_method", negate = true },
+]
+
+# Complement rule: confirm which methods DO sanitise correctly (info only).
+[[rules]]
+name        = "ue5_filepath_sanitised"
+pattern     = '\bFFilePath\b|\bFDirectoryPath\b'
+scope       = "**::*"
+search      = "code"
+severity    = "info"
+message     = "FFilePath / FDirectoryPath used with FPaths::ConvertRelativePathToFull present — verify the sanitised path is still validated against an allowed root"
+chain       = [
+    { pattern = "FPaths::ConvertRelativePathToFull", relationship = "anywhere_in_method", negate = false },
+]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Exec UFUNCTION — in-game console attack surface
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Exec UFUNCTIONs are callable from the in-game console, cheat manager, or
+# automated tests.  In a shipping build they should either be stripped or
+# guarded behind IsValid() / cheat-manager checks.
+[[rules]]
+name        = "ue5_exec_ufunction"
+pattern     = 'UFUNCTION\s*\([^)]*\bExec\b'
+scope       = "**"
+search      = "code"
+severity    = "warning"
+message     = "Exec UFUNCTION — callable from the in-game console; guard with GIsEditor or a cheat-manager check, and strip in shipping builds"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FPlatformProcess::CreateProc — OS command injection
+# ══════════════════════════════════════════════════════════════════════════════
+
+# CreateProc launches an external process.  If any argument comes from a
+# network message or player input without sanitisation an attacker can execute
+# arbitrary commands on the server.
+[[rules]]
+name        = "ue5_create_proc"
+pattern     = 'FPlatformProcess::CreateProc'
+scope       = "**::*"
+search      = "code"
+severity    = "error"
+message     = "FPlatformProcess::CreateProc invoked — validate and allowlist all arguments to prevent OS command injection"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ServerTravel — level / URL injection
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ServerTravel accepts a URL string.  An unvalidated client-supplied URL can
+# redirect all connected players to an attacker-controlled level, or trigger
+# unexpected engine behaviour via URL options (e.g. ?listen, ?spectatoronly).
+[[rules]]
+name        = "ue5_server_travel"
+pattern     = '\bServerTravel\s*\('
+scope       = "**::*"
+search      = "code"
+severity    = "warning"
+message     = "ServerTravel called — validate the URL against an allowlist of known levels and strip or reject unexpected URL options"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Unsafe C string / memory functions
+# ══════════════════════════════════════════════════════════════════════════════
+
+# strcpy, strcat, sprintf, gets, and friends have no bounds checking.
+# UE5 provides safe alternatives: FCString::Strcpy / Strcat / Sprintf,
+# FString::Printf, or the bounded C11 variants (strncpy_s, snprintf).
+[[rules]]
+name        = "ue5_unsafe_string_fn"
+pattern     = '\b(?:strcpy|strcat|sprintf|gets|vsprintf|wcscpy|wcscat|wsprintf)\s*\('
+scope       = "**::*"
+search      = "code"
+severity    = "error"
+message     = "Unsafe C string function — use FCString::Strcpy/Strcat/Sprintf or FString::Printf; unbounded writes can overflow adjacent stack/heap memory"
+
+# memcpy and memmove are safe when both the size and source are controlled,
+# but deserve a review comment whenever the size argument is derived from
+# network input.  UE5 wrapper: FMemory::Memcpy.
+[[rules]]
+name        = "ue5_raw_memcpy"
+pattern     = '\b(?:memcpy|memmove)\s*\('
+scope       = "**::*"
+search      = "code"
+severity    = "warning"
+message     = "Raw memcpy/memmove — prefer FMemory::Memcpy; verify the size argument cannot be attacker-controlled (heap/stack overflow risk)"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Shell / process execution
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ShellExecute* opens or runs a file through the Windows shell association
+# table.  An attacker-controlled path or verb can execute arbitrary programs
+# or open malicious URIs.
+[[rules]]
+name        = "ue5_shell_execute"
+pattern     = '\bShellExecute(?:Ex)?[AW]?\s*\('
+scope       = "**::*"
+search      = "code"
+severity    = "error"
+message     = "ShellExecute / ShellExecuteEx — executes via the Windows shell; an unvalidated path or verb allows arbitrary program execution"
+
+# WinExec is a legacy Win32 API superseded by CreateProcess.  Its single
+# command-string argument is trivially injectable.
+[[rules]]
+name        = "ue5_win_exec"
+pattern     = '\bWinExec\s*\('
+scope       = "**::*"
+search      = "code"
+severity    = "error"
+message     = "WinExec — legacy shell-command API; replace with FPlatformProcess::CreateProc and allowlist every argument"
+
+# system() and popen() pass their argument directly to the OS command
+# interpreter (cmd.exe / sh).  Any unvalidated fragment enables full
+# command injection.
+[[rules]]
+name        = "ue5_system_popen"
+pattern     = '\b(?:system|popen|_popen)\s*\('
+scope       = "**::*"
+search      = "code"
+severity    = "error"
+message     = "system() / popen() — passes a string to the OS shell; replace with FPlatformProcess::CreateProc and validate every argument"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Direct socket I/O — bypass of UE5 networking stack
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Raw Winsock calls bypass UE5's packet handler, encryption, and replication
+# model.  Use ISocketSubsystem / FSocket (or UE5 RPCs) so that anti-cheat
+# hooks and net-driver encryption remain in effect.
+[[rules]]
+name        = "ue5_winsock_direct"
+pattern     = '\bWSA(?:Socket|Startup|Connect|Send|Recv|SendTo|RecvFrom)\s*\(|\bclosesocket\s*\('
+scope       = "**::*"
+search      = "code"
+severity    = "error"
+message     = "Direct Winsock call — bypasses UE5's ISocketSubsystem; use FSocket / UE5 RPCs so encryption and anti-cheat instrumentation remain effective"
+
+# The global-namespace qualifier (::) distinguishes raw POSIX/BSD socket
+# API calls from UE5 member functions like FSocket::Send().
+[[rules]]
+name        = "ue5_posix_socket_direct"
+pattern     = '::(?:socket|connect|bind|listen|accept|send|recv|sendto|recvfrom)\s*\('
+scope       = "**::*"
+search      = "code"
+severity    = "error"
+message     = "Global-namespace socket call — bypasses UE5's ISocketSubsystem; use FSocket / UE5 RPCs so encryption and anti-cheat instrumentation remain effective"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Weak / predictable RNG
+# ══════════════════════════════════════════════════════════════════════════════
+
+# rand() is a linear-congruential generator seeded with srand(); its output
+# is predictable.  For gameplay randomness use FMath::RandRange; for anything
+# security-sensitive (tokens, salts, IDs) use a platform CSPRNG.
+[[rules]]
+name        = "ue5_weak_rng"
+pattern     = '\b(?:rand|srand)\s*\('
+scope       = "**::*"
+search      = "code"
+severity    = "warning"
+message     = "rand() / srand() — predictable LCG; use FMath::RandRange for gameplay or a platform CSPRNG for security-sensitive values (tokens, salts, session IDs)"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Dynamic asset / class loading with runtime paths
+# ══════════════════════════════════════════════════════════════════════════════
+
+# StaticLoadClass and StaticLoadObject accept a runtime path string.  If that
+# string comes from a network message a client can force the server to load
+# arbitrary Blueprint classes, potentially crashing it or triggering
+# unintended gameplay logic.
+[[rules]]
+name        = "ue5_static_load_class"
+pattern     = '\bStaticLoadClass\s*\('
+scope       = "**::*"
+search      = "code"
+severity    = "warning"
+message     = "StaticLoadClass with a runtime path — validate the class path against an allowlist; a client-supplied path can load unintended Blueprint classes"
+
+[[rules]]
+name        = "ue5_static_load_object"
+pattern     = '\bStaticLoadObject\s*\('
+scope       = "**::*"
+search      = "code"
+severity    = "warning"
+message     = "StaticLoadObject with a runtime path — validate the asset path against an allowlist; a client-supplied path can load unintended assets"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FPlatformProcess::LaunchURL — external URL opening
+# ══════════════════════════════════════════════════════════════════════════════
+
+# LaunchURL hands a URL to the OS default handler.  A client-supplied URL
+# can open phishing pages, trigger protocol handlers (steam://, file://),
+# or pass javascript: URIs to the default browser.
+[[rules]]
+name        = "ue5_launch_url"
+pattern     = 'FPlatformProcess::LaunchURL'
+scope       = "**::*"
+search      = "code"
+severity    = "warning"
+message     = "FPlatformProcess::LaunchURL — validate the URL scheme and host against an allowlist; attacker-controlled URLs can open phishing pages or invoke dangerous protocol handlers"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# OpenLevel — client-triggered level load
+# ══════════════════════════════════════════════════════════════════════════════
+
+# OpenLevel performs a full level transition.  An unvalidated level name
+# supplied by a client can load unintended maps or pass malformed parameters
+# that crash the server.
+[[rules]]
+name        = "ue5_open_level"
+pattern     = '\bOpenLevel\s*\('
+scope       = "**::*"
+search      = "code"
+severity    = "warning"
+message     = "OpenLevel called — validate the level name against an allowlist of known maps; a client-supplied name can load unintended levels or crash the server"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TODO / FIXME / HACK in security-sensitive areas
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Finds deferred-work markers inside functions that handle RPCs or file paths,
+# which may indicate incomplete security hardening.
+[[rules]]
+name        = "ue5_security_todo_in_rpc_impl"
+pattern     = '\b(?:TODO|FIXME|HACK|SECURITY)\b'
+scope       = "**::*"
+search      = "comments"
+severity    = "warning"
+message     = "Deferred-work marker in a method — review before shipping to ensure security-critical logic is complete"

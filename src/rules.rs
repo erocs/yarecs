@@ -127,12 +127,23 @@ pub enum ChainRelationship {
     AnywhereInClass,
     /// Anywhere within the body of the nearest enclosing Namespace scope.
     AnywhereInNamespace,
+    /// Within the single statement that contains the trigger match.
+    ///
+    /// A statement is the byte span from the nearest preceding `;`/`{`/`}` to the
+    /// nearest following `;`/`{`/`}`, skipping those inside comments or string literals.
+    /// This is the narrowest chain scope and is suitable for checking whether a
+    /// keyword appears in the *same macro call or declaration* as the trigger.
+    AnywhereInStatement,
 }
 
-/// A compiled chained pattern that must co-exist with the trigger match.
+/// A compiled chained pattern that must co-exist with (or be absent from) the trigger match.
 pub struct ChainedPattern {
     pub matcher: RegexMatcher,
     pub relationship: ChainRelationship,
+    /// When `true` the condition is satisfied when the pattern is **not** found in the
+    /// search range.  Useful for "fire only when the safe counterpart is missing"
+    /// (e.g. a Server RPC with no `WithValidation`, a file path with no sanitisation call).
+    pub negate: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +208,9 @@ struct ChainConfig {
     case_insensitive: bool,
     #[serde(default)]
     word: bool,
+    /// See [`ChainedPattern::negate`].
+    #[serde(default)]
+    negate: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -207,6 +221,7 @@ enum ChainRelationshipConfig {
     AnywhereInMethod,
     AnywhereInClass,
     AnywhereInNamespace,
+    AnywhereInStatement,
 }
 
 fn default_severity() -> Severity { Severity::Warning }
@@ -246,13 +261,14 @@ pub fn load_rules(path: &Path) -> Result<Vec<Rule>> {
                     "invalid chain regex in rule '{}': {}", rc.name, cc.pattern
                 ))?;
             let relationship = match cc.relationship {
-                ChainRelationshipConfig::After              => ChainRelationship::After,
-                ChainRelationshipConfig::Before             => ChainRelationship::Before,
-                ChainRelationshipConfig::AnywhereInMethod   => ChainRelationship::AnywhereInMethod,
-                ChainRelationshipConfig::AnywhereInClass    => ChainRelationship::AnywhereInClass,
+                ChainRelationshipConfig::After               => ChainRelationship::After,
+                ChainRelationshipConfig::Before              => ChainRelationship::Before,
+                ChainRelationshipConfig::AnywhereInMethod    => ChainRelationship::AnywhereInMethod,
+                ChainRelationshipConfig::AnywhereInClass     => ChainRelationship::AnywhereInClass,
                 ChainRelationshipConfig::AnywhereInNamespace => ChainRelationship::AnywhereInNamespace,
+                ChainRelationshipConfig::AnywhereInStatement => ChainRelationship::AnywhereInStatement,
             };
-            Ok(ChainedPattern { matcher: chain_matcher, relationship })
+            Ok(ChainedPattern { matcher: chain_matcher, relationship, negate: cc.negate })
         }).collect::<Result<Vec<_>>>()?;
 
         Ok(Rule {

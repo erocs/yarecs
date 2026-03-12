@@ -200,7 +200,7 @@ fn search_scope<'tree>(
             let _ = rule.matcher.find_iter(slice, |m| {
                 let abs = body.start + m.start();
                 if seen.insert(abs) {
-                    if chain_satisfied(source, abs, abs + m.len(), &body, &rule.chain, current_node, ancestors) {
+                    if chain_satisfied(source, abs, abs + m.len(), &body, &rule.chain, current_node, ancestors, lex) {
                         let ctx = classify_position(abs, &lex.comment_ranges, &lex.string_ranges);
                         emit_match(source, path, abs, m.len(), ctx, rule, scope_path, out);
                     }
@@ -215,7 +215,7 @@ fn search_scope<'tree>(
                 let _ = rule.matcher.find_iter(slice, |m| {
                     let abs = cr.start + m.start();
                     if seen.insert(abs) {
-                        if chain_satisfied(source, abs, abs + m.len(), &body, &rule.chain, current_node, ancestors) {
+                        if chain_satisfied(source, abs, abs + m.len(), &body, &rule.chain, current_node, ancestors, lex) {
                             emit_match(source, path, abs, m.len(), MatchContext::Comment, rule, scope_path, out);
                         }
                     }
@@ -230,7 +230,7 @@ fn search_scope<'tree>(
                 let _ = rule.matcher.find_iter(slice, |m| {
                     let abs = gap.start + m.start();
                     if seen.insert(abs) {
-                        if chain_satisfied(source, abs, abs + m.len(), &body, &rule.chain, current_node, ancestors) {
+                        if chain_satisfied(source, abs, abs + m.len(), &body, &rule.chain, current_node, ancestors, lex) {
                             emit_match(source, path, abs, m.len(), MatchContext::Code, rule, scope_path, out);
                         }
                     }
@@ -254,6 +254,7 @@ fn chain_satisfied(
     chain: &[ChainedPattern],
     current_node: &ScopeNode,
     ancestors: &[&ScopeNode],
+    lex: &LexOutput,
 ) -> bool {
     for cp in chain {
         let search: Range<usize> = match cp.relationship {
@@ -272,6 +273,36 @@ fn chain_satisfied(
                     None    => return false,
                 }
             }
+            ChainRelationship::AnywhereInStatement => {
+                let bytes = source.as_bytes();
+                // Walk backward from the trigger to the nearest statement boundary
+                // (`;`, `{`, `}`), skipping positions inside comments or strings.
+                // The `loop { break value; }` expression evaluates to the break value.
+                let stmt_start: usize = {
+                    let mut pos = trigger_start;
+                    loop {
+                        if pos <= body.start { break body.start; }
+                        pos -= 1;
+                        if in_any_range(pos, &lex.comment_ranges)
+                            || in_any_range(pos, &lex.string_ranges) { continue; }
+                        let b = bytes[pos];
+                        if b == b';' || b == b'{' || b == b'}' { break pos + 1; }
+                    }
+                };
+                // Walk forward from the trigger end to the next statement boundary.
+                let stmt_end: usize = {
+                    let mut pos = trigger_end;
+                    loop {
+                        if pos >= body.end { break body.end; }
+                        if in_any_range(pos, &lex.comment_ranges)
+                            || in_any_range(pos, &lex.string_ranges) { pos += 1; continue; }
+                        let b = bytes[pos];
+                        pos += 1;
+                        if b == b';' || b == b'{' || b == b'}' { break pos; }
+                    }
+                };
+                stmt_start..stmt_end
+            }
         };
 
         if search.start >= search.end || search.end > source.len() {
@@ -281,7 +312,8 @@ fn chain_satisfied(
         let haystack = source[search].as_bytes();
         let mut found = false;
         let _ = cp.matcher.find_iter(haystack, |_| { found = true; false });
-        if !found {
+        // Positive chain: pattern must be present.  Negative (negate=true): must be absent.
+        if found == cp.negate {
             return false;
         }
     }
@@ -505,6 +537,7 @@ mod tests {
         let chained = chain.into_iter().map(|(pat, rel)| ChainedPattern {
             matcher: RegexMatcherBuilder::new().build(pat).unwrap(),
             relationship: rel,
+            negate: false,
         }).collect();
         Rule {
             name: "chain_test".to_string(),
@@ -525,6 +558,28 @@ mod tests {
 
     fn run_single(source: &str, filter: &str, needle: &str) -> Vec<ScanMatch> {
         run(source, &[make_rule(needle, filter, SearchTarget::All)])
+    }
+
+    /// Variant of `make_chained_rule` that accepts a `negate` flag per chain entry.
+    fn make_chained_rule_neg(
+        trigger: &str,
+        filter: &str,
+        chain: Vec<(&str, ChainRelationship, bool)>,
+    ) -> Rule {
+        let chained = chain.into_iter().map(|(pat, rel, neg)| ChainedPattern {
+            matcher: RegexMatcherBuilder::new().build(pat).unwrap(),
+            relationship: rel,
+            negate: neg,
+        }).collect();
+        Rule {
+            name: "chain_neg_test".to_string(),
+            matcher: RegexMatcherBuilder::new().build(trigger).unwrap(),
+            scope_filter: Some(ScopeFilter::parse(filter)),
+            message: "chain_neg".to_string(),
+            severity: Severity::Warning,
+            search_target: SearchTarget::All,
+            chain: chained,
+        }
     }
 
     /// Like `run` but uses the profile for `ext` instead of C++.
@@ -907,6 +962,125 @@ class Class2 { public: void g() { baz(); } };
 
         assert_eq!(run(src_all,          &[rule_all]).len(),     1, "all conditions present → match");
         assert_eq!(run(src_missing_step2, &[rule_missing]).len(), 0, "missing step2 → no match");
+    }
+
+    // -----------------------------------------------------------------------
+    // Negated chain tests
+    // -----------------------------------------------------------------------
+
+    /// negate=true fires when the chain pattern is *absent* from the search range.
+    #[test]
+    fn chain_negate_fires_when_pattern_absent() {
+        let src = "class C { public: void f() { foo(); } };\n";
+        let rule = make_chained_rule_neg("foo", "C::f",
+            vec![("bar", ChainRelationship::AnywhereInMethod, true)]);
+        let ms = run(src, &[rule]);
+        assert_eq!(ms.len(), 1, "negate chain should fire when pattern is absent");
+    }
+
+    /// negate=true is suppressed when the chain pattern *is* present.
+    #[test]
+    fn chain_negate_suppressed_when_pattern_present() {
+        let src = "class C { public: void f() { foo(); bar(); } };\n";
+        let rule = make_chained_rule_neg("foo", "C::f",
+            vec![("bar", ChainRelationship::AnywhereInMethod, true)]);
+        let ms = run(src, &[rule]);
+        assert_eq!(ms.len(), 0, "negate chain should be suppressed when pattern is present");
+    }
+
+    /// negate=true with anywhere_in_class: fires when the pattern is absent from the
+    /// entire class body (not just the current method).
+    #[test]
+    fn chain_negate_anywhere_in_class_fires_when_absent() {
+        let src = r#"
+class MyClass {
+public:
+    void method1() { trigger(); }
+    void method2() { unrelated(); }
+};
+"#;
+        let rule = make_chained_rule_neg("trigger", "MyClass::method1",
+            vec![("guard_call", ChainRelationship::AnywhereInClass, true)]);
+        let ms = run(src, &[rule]);
+        assert_eq!(ms.len(), 1, "guard absent from whole class → should fire");
+    }
+
+    /// negate=true with anywhere_in_class: suppressed when pattern appears in a
+    /// *different* method of the same class.
+    #[test]
+    fn chain_negate_anywhere_in_class_suppressed_by_other_method() {
+        let src = r#"
+class MyClass {
+public:
+    void method1() { trigger(); }
+    void method2() { guard_call(); }
+};
+"#;
+        let rule = make_chained_rule_neg("trigger", "MyClass::method1",
+            vec![("guard_call", ChainRelationship::AnywhereInClass, true)]);
+        let ms = run(src, &[rule]);
+        assert_eq!(ms.len(), 0, "guard present elsewhere in class → should suppress");
+    }
+
+    // -----------------------------------------------------------------------
+    // AnywhereInStatement tests
+    // -----------------------------------------------------------------------
+
+    /// Chain pattern present in the same statement as the trigger → fires.
+    #[test]
+    fn anywhere_in_statement_fires_when_pattern_in_same_statement() {
+        // Both TRIGGER and GUARD are inside the same UFUNCTION()-style declaration,
+        // before the first semicolon.
+        let src = "class C {\n    UFUNCTION(TRIGGER, GUARD)\n    void Rpc();\n};\n";
+        let rule = make_chained_rule("TRIGGER", "**",
+            vec![("GUARD", ChainRelationship::AnywhereInStatement)]);
+        let ms = run(src, &[rule]);
+        assert_eq!(ms.len(), 1);
+    }
+
+    /// Chain pattern is in a *different* statement — must not fire.
+    #[test]
+    fn anywhere_in_statement_isolated_to_current_statement() {
+        // GUARD appears only in the second declaration, not the first.
+        let src = "class C {\n    UFUNCTION(TRIGGER)\n    void RpcA();\n    UFUNCTION(GUARD)\n    void RpcB();\n};\n";
+        let rule = make_chained_rule("TRIGGER", "**",
+            vec![("GUARD", ChainRelationship::AnywhereInStatement)]);
+        let ms = run(src, &[rule]);
+        assert_eq!(ms.len(), 0, "GUARD in a different statement must not satisfy the chain");
+    }
+
+    /// Simulates the UE5 Server RPC use-case: per-declaration WithValidation detection.
+    /// The first RPC has no WithValidation → negate chain fires.
+    /// The second RPC has WithValidation → negate chain is suppressed.
+    #[test]
+    fn anywhere_in_statement_negate_per_declaration_ue5_style() {
+        let src = concat!(
+            "class AMyActor {\npublic:\n",
+            "    UFUNCTION(Server, Reliable)\n",
+            "    void RpcNoValidation(float Value);\n",
+            "    UFUNCTION(Server, Reliable, WithValidation)\n",
+            "    void RpcWithValidation(float Value);\n",
+            "};\n",
+        );
+        let rule = make_chained_rule_neg("Server", "**",
+            vec![("WithValidation", ChainRelationship::AnywhereInStatement, true)]);
+        let ms = run(src, &[rule]);
+        assert_eq!(ms.len(), 1, "only the RPC without WithValidation should fire");
+        assert!(ms[0].matched_text == "Server");
+        // Verify it matched in the first declaration (line 3), not the second (line 5)
+        assert_eq!(ms[0].line, 3);
+    }
+
+    /// A brace boundary (method body open) also terminates the statement window.
+    #[test]
+    fn anywhere_in_statement_stops_at_brace() {
+        // GUARD is inside the function body (after `{`), not in the same statement
+        // as the TRIGGER in the signature.
+        let src = "class C {\npublic:\n    void Method(TRIGGER arg) {\n        GUARD();\n    }\n};\n";
+        let rule = make_chained_rule("TRIGGER", "**",
+            vec![("GUARD", ChainRelationship::AnywhereInStatement)]);
+        let ms = run(src, &[rule]);
+        assert_eq!(ms.len(), 0, "GUARD inside the body brace is outside the statement window");
     }
 
     // -----------------------------------------------------------------------
