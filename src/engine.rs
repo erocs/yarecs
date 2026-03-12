@@ -82,6 +82,9 @@ pub struct ScanMatch {
     pub scope_path: Vec<String>,
     /// The exact source text that the trigger regex matched.
     pub matched_text: String,
+    /// The full source line containing the match, whitespace-trimmed.
+    /// Provides immediate context without requiring a separate file read.
+    pub snippet: String,
     pub message: String,
     pub severity: Severity,
     /// Whether the match was found in code, a comment, or a string literal.
@@ -356,10 +359,20 @@ fn emit_match(
         column: col,
         scope_path: scope_path.to_vec(),
         matched_text: source[abs..abs + len].to_string(),
+        snippet: extract_snippet(source, abs),
         message: rule.message.clone(),
         severity: rule.severity.clone(),
         context,
     });
+}
+
+/// Extract the full source line containing `byte_pos`, whitespace-trimmed.
+/// Scans backward to the preceding `\n` (or start of source) and forward to
+/// the next `\n` (or end of source).
+fn extract_snippet(source: &str, byte_pos: usize) -> String {
+    let start = source[..byte_pos].rfind('\n').map_or(0, |i| i + 1);
+    let end   = source[byte_pos..].find('\n').map_or(source.len(), |i| byte_pos + i);
+    source[start..end].trim().to_string()
 }
 
 /// Determine whether byte `pos` falls inside a comment, a string literal, or plain code.

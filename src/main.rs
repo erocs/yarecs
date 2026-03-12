@@ -1,15 +1,17 @@
 mod engine;
 mod lexer;
+mod output;
 mod rules;
 mod scope;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufWriter};
 use std::path::PathBuf;
 use walkdir::WalkDir;
 
-use engine::{MatchContext, ScanMatch};
+use engine::ScanMatch;
+use output::OutputFormat;
 use rules::{load_rules, Severity};
 use scope::{print_scope_tree, profile_for_ext, ScopeParser};
 
@@ -41,19 +43,13 @@ struct Args {
     #[arg(long)]
     dump_scopes: bool,
 
-    /// Output format: text | json
+    /// Output format: text | json | csv | sarif
     #[arg(short, long, default_value = "text")]
     format: OutputFormat,
 
     /// Write results to this file instead of stdout
     #[arg(short, long)]
     output: Option<PathBuf>,
-}
-
-#[derive(Clone, clap::ValueEnum)]
-enum OutputFormat {
-    Text,
-    Json,
 }
 
 // ---------------------------------------------------------------------------
@@ -132,9 +128,9 @@ fn main() -> Result<()> {
         if let Some(ref out_path) = args.output {
             let file = std::fs::File::create(out_path)
                 .with_context(|| format!("cannot create output file {}", out_path.display()))?;
-            write_results(&mut BufWriter::new(file), &args.format, &all_matches)?;
+            output::write_results(&mut BufWriter::new(file), &args.format, &all_matches)?;
         } else {
-            write_results(&mut BufWriter::new(io::stdout()), &args.format, &all_matches)?;
+            output::write_results(&mut BufWriter::new(io::stdout()), &args.format, &all_matches)?;
         }
 
         let errors = all_matches.iter().filter(|m| m.severity == Severity::Error).count();
@@ -152,67 +148,3 @@ fn main() -> Result<()> {
 
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// Output formatters
-// ---------------------------------------------------------------------------
-
-fn write_results(out: &mut dyn Write, format: &OutputFormat, matches: &[ScanMatch]) -> Result<()> {
-    match format {
-        OutputFormat::Text => write_text(out, matches)?,
-        OutputFormat::Json => write_json(out, matches)?,
-    }
-    Ok(())
-}
-
-fn write_text(out: &mut dyn Write, matches: &[ScanMatch]) -> io::Result<()> {
-    for m in matches {
-        let scope = if m.scope_path.is_empty() {
-            "<global>".to_string()
-        } else {
-            m.scope_path.join("::")
-        };
-        // Append {comment} / {string} tag only when not plain code, so the
-        // common case stays clean and flagged-in-comment matches are obvious.
-        let ctx_tag = match m.context {
-            MatchContext::Code          => "",
-            MatchContext::Comment       => "  {in comment}",
-            MatchContext::StringLiteral => "  {in string}",
-        };
-        writeln!(
-            out,
-            "{}:{}:{}: [{}] {} [{}]{}",
-            m.file.display(), m.line, m.column,
-            m.severity, m.message, scope, ctx_tag,
-        )?;
-        writeln!(out, "  match: {:?}", m.matched_text)?;
-    }
-    Ok(())
-}
-
-fn write_json(out: &mut dyn Write, matches: &[ScanMatch]) -> io::Result<()> {
-    writeln!(out, "[")?;
-    for (i, m) in matches.iter().enumerate() {
-        let scope = m.scope_path.join("::");
-        let comma = if i + 1 < matches.len() { "," } else { "" };
-        // Minimal hand-rolled JSON to avoid pulling in serde_json.
-        writeln!(
-            out,
-            "  {{\"rule\":{r:?},\"file\":{f:?},\"line\":{l},\"col\":{c},\
-             \"scope\":{s:?},\"severity\":{sev:?},\"context\":{ctx:?},\
-             \"message\":{msg:?},\"match\":{mat:?}}}{comma}",
-            r   = m.rule_name,
-            f   = m.file.to_string_lossy(),
-            l   = m.line,
-            c   = m.column,
-            s   = scope,
-            sev = m.severity.to_string(),
-            ctx = m.context.to_string(),
-            msg = m.message,
-            mat = m.matched_text,
-        )?;
-    }
-    writeln!(out, "]")?;
-    Ok(())
-}
-
