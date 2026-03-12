@@ -85,8 +85,14 @@ pub struct ScopeNode {
 
 impl ScopeNode {
     /// Byte range of the contents between `{` and `}` (exclusive of the braces).
+    ///
+    /// For the virtual `File` root there is no `{`, so the range starts at 0.
     pub fn body_range(&self) -> std::ops::Range<usize> {
-        self.body_start + 1..self.body_end
+        if self.kind == ScopeKind::File {
+            self.body_start..self.body_end
+        } else {
+            self.body_start + 1..self.body_end
+        }
     }
 }
 

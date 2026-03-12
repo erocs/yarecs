@@ -594,6 +594,45 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // UTF-8 BOM resilience
+    // -----------------------------------------------------------------------
+
+    // Files produced by MSVC often begin with a UTF-8 BOM (U+FEFF, bytes EF BB BF).
+    // The virtual File root scope uses body_start=0, so body_range() used to return
+    // 1..len, causing source[1..] to panic when byte 1 is inside the 3-byte BOM.
+    // Verify that scanning such files with scope="**" (which hits the root scope) and
+    // SearchTarget::Code does not panic and correctly finds matches.
+
+    #[test]
+    fn bom_file_code_search_does_not_panic() {
+        // BOM at byte 0, then a global-scope needle (no enclosing class/function).
+        let source = "\u{FEFF}// top of file\nstrcpy(dst, src);\n";
+        let rule = make_rule("strcpy", "**", SearchTarget::Code);
+        let matches = run(source, &[rule]);
+        assert_eq!(matches.len(), 1, "expected one match in BOM file");
+        assert_eq!(matches[0].matched_text, "strcpy");
+    }
+
+    #[test]
+    fn bom_file_all_search_does_not_panic() {
+        // Same source, SearchTarget::All – exercises the body[0..] slice on the root.
+        let source = "\u{FEFF}strcpy(dst, src); // bad\n";
+        let rule = make_rule("strcpy", "**", SearchTarget::All);
+        let matches = run(source, &[rule]);
+        assert_eq!(matches.len(), 1);
+    }
+
+    #[test]
+    fn bom_file_match_inside_class() {
+        // BOM + normal class body – confirms named scopes still work correctly.
+        let source = "\u{FEFF}class Foo {\n    void bar() { strcpy(d, s); }\n};\n";
+        let rule = make_rule("strcpy", "Foo::bar", SearchTarget::Code);
+        let matches = run(source, &[rule]);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].scope_path, vec!["Foo", "bar"]);
+    }
+
+    // -----------------------------------------------------------------------
     // Large-file tests
     // -----------------------------------------------------------------------
 

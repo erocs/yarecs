@@ -5,6 +5,7 @@ mod scope;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use std::io::{self, BufWriter, Write};
 use std::path::PathBuf;
 use walkdir::WalkDir;
 
@@ -43,6 +44,10 @@ struct Args {
     /// Output format: text | json
     #[arg(short, long, default_value = "text")]
     format: OutputFormat,
+
+    /// Write results to this file instead of stdout
+    #[arg(short, long)]
+    output: Option<PathBuf>,
 }
 
 #[derive(Clone, clap::ValueEnum)]
@@ -68,6 +73,7 @@ fn main() -> Result<()> {
 
     let mut all_matches: Vec<ScanMatch> = Vec::new();
     let mut file_count = 0usize;
+    let mut last_dir: Option<PathBuf> = None;
 
     for input_path in &args.paths {
         for entry in WalkDir::new(input_path)
@@ -76,15 +82,36 @@ fn main() -> Result<()> {
             .filter(|e| e.file_type().is_file())
         {
             let path = entry.path();
+
+            // Print a progress line whenever we descend into a new directory.
+            let dir = path.parent().map(|p| p.to_path_buf());
+            if dir != last_dir {
+                if let Some(ref d) = dir {
+                    eprintln!("  {}/", d.display());
+                }
+                last_dir = dir;
+            }
+
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             if !extensions.iter().any(|&e| e == ext) {
                 continue;
             }
 
-            let source = std::fs::read_to_string(path)
-                .with_context(|| format!("cannot read {}", path.display()))?;
+            let raw = match std::fs::read_to_string(path) {
+                Ok(s) => s,
+                Err(e) => {
+                    // Non-UTF-8 files (Latin-1, UTF-16, binary) are skipped with a
+                    // warning so one bad file does not abort the entire scan.
+                    eprintln!("warning: skipping {} ({})", path.display(), e);
+                    continue;
+                }
+            };
+            // Strip the UTF-8 BOM (U+FEFF, encoded as EF BB BF) if present.
+            // MSVC-generated headers commonly include it; leaving it in causes
+            // byte-index panics when source[1..] is indexed inside body_range.
+            let source = raw.strip_prefix('\u{FEFF}').unwrap_or(&raw);
 
-            let lex     = lexer::Lexer::new(&source).tokenize();
+            let lex     = lexer::Lexer::new(source).tokenize();
             let profile = profile_for_ext(ext);
             let tree    = ScopeParser::new(profile).parse(&lex.tokens, source.len());
 
@@ -94,16 +121,20 @@ fn main() -> Result<()> {
                 continue;
             }
 
-            let file_matches = engine::scan_file(&source, path, &tree, &rules, &lex);
+            let file_matches = engine::scan_file(source, path, &tree, &rules, &lex);
             all_matches.extend(file_matches);
             file_count += 1;
         }
     }
 
     if !args.dump_scopes {
-        match args.format {
-            OutputFormat::Json => print_json(&all_matches),
-            OutputFormat::Text => print_text(&all_matches),
+        // Open output destination: a file if --output was given, otherwise stdout.
+        if let Some(ref out_path) = args.output {
+            let file = std::fs::File::create(out_path)
+                .with_context(|| format!("cannot create output file {}", out_path.display()))?;
+            write_results(&mut BufWriter::new(file), &args.format, &all_matches)?;
+        } else {
+            write_results(&mut BufWriter::new(io::stdout()), &args.format, &all_matches)?;
         }
 
         let errors = all_matches.iter().filter(|m| m.severity == Severity::Error).count();
@@ -126,7 +157,15 @@ fn main() -> Result<()> {
 // Output formatters
 // ---------------------------------------------------------------------------
 
-fn print_text(matches: &[ScanMatch]) {
+fn write_results(out: &mut dyn Write, format: &OutputFormat, matches: &[ScanMatch]) -> Result<()> {
+    match format {
+        OutputFormat::Text => write_text(out, matches)?,
+        OutputFormat::Json => write_json(out, matches)?,
+    }
+    Ok(())
+}
+
+fn write_text(out: &mut dyn Write, matches: &[ScanMatch]) -> io::Result<()> {
     for m in matches {
         let scope = if m.scope_path.is_empty() {
             "<global>".to_string()
@@ -136,26 +175,29 @@ fn print_text(matches: &[ScanMatch]) {
         // Append {comment} / {string} tag only when not plain code, so the
         // common case stays clean and flagged-in-comment matches are obvious.
         let ctx_tag = match m.context {
-            MatchContext::Code          => String::new(),
-            MatchContext::Comment       => "  {in comment}".to_string(),
-            MatchContext::StringLiteral => "  {in string}".to_string(),
+            MatchContext::Code          => "",
+            MatchContext::Comment       => "  {in comment}",
+            MatchContext::StringLiteral => "  {in string}",
         };
-        println!(
+        writeln!(
+            out,
             "{}:{}:{}: [{}] {} [{}]{}",
             m.file.display(), m.line, m.column,
             m.severity, m.message, scope, ctx_tag,
-        );
-        println!("  match: {:?}", m.matched_text);
+        )?;
+        writeln!(out, "  match: {:?}", m.matched_text)?;
     }
+    Ok(())
 }
 
-fn print_json(matches: &[ScanMatch]) {
-    println!("[");
+fn write_json(out: &mut dyn Write, matches: &[ScanMatch]) -> io::Result<()> {
+    writeln!(out, "[")?;
     for (i, m) in matches.iter().enumerate() {
         let scope = m.scope_path.join("::");
         let comma = if i + 1 < matches.len() { "," } else { "" };
-        // Minimal hand-rolled JSON to avoid pulling in serde_json
-        println!(
+        // Minimal hand-rolled JSON to avoid pulling in serde_json.
+        writeln!(
+            out,
             "  {{\"rule\":{r:?},\"file\":{f:?},\"line\":{l},\"col\":{c},\
              \"scope\":{s:?},\"severity\":{sev:?},\"context\":{ctx:?},\
              \"message\":{msg:?},\"match\":{mat:?}}}{comma}",
@@ -168,7 +210,9 @@ fn print_json(matches: &[ScanMatch]) {
             ctx = m.context.to_string(),
             msg = m.message,
             mat = m.matched_text,
-        );
+        )?;
     }
-    println!("]");
+    writeln!(out, "]")?;
+    Ok(())
 }
+
