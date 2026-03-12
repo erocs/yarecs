@@ -1,0 +1,86 @@
+# Example rules for cish-scanner
+#
+# scope filter syntax:
+#   **           – anywhere (all named scopes)
+#   **::foo      – any scope named "foo" at any depth
+#   **::*::*     – any method in any class (two levels deep)
+#   Foo::Bar::*  – any method in class Bar inside namespace Foo
+#   (omit scope) – search every named scope in the file
+
+[[rules]]
+name       = "no_raw_new"
+pattern    = "\\bnew\\s+\\w+"
+scope      = "**::*::*"          # any method inside any class
+message    = "Prefer smart pointers over raw 'new'"
+severity   = "warning"
+
+[[rules]]
+name       = "no_printf"
+pattern    = "\\bprintf\\s*\\("
+scope      = "**"                 # anywhere
+message    = "Use a structured logger instead of printf"
+severity   = "warning"
+
+[[rules]]
+name       = "no_goto"
+pattern    = "\\bgoto\\b"
+message    = "goto is forbidden"
+severity   = "error"
+# no scope → scans every named scope
+
+[[rules]]
+name       = "todo_comment"
+pattern    = "TODO|FIXME|HACK"
+message    = "Unresolved annotation"
+severity   = "info"
+
+# Demonstrates comment-targeted search: only fires when the pattern
+# appears inside a // or /* */ comment, never in live code.
+[[rules]]
+name       = "commented_out_unsafe"
+pattern    = "\\bunsafe\\b|\\bdelete\\b|\\bfree\\b"
+search     = "comments"
+message    = "Potentially dangerous call is commented out – verify it stays that way"
+severity   = "warning"
+
+# ---------------------------------------------------------------------------
+# Chain examples
+# Chain = additional patterns that must ALL match for the rule to fire.
+# Relationships: after | before | anywhere_in_method | anywhere_in_class | anywhere_in_namespace
+# ---------------------------------------------------------------------------
+
+# Flag lock() only when unlock() does NOT appear after it in the same method.
+# (Invert logic: remove this rule and add a "no-unlock" variant as needed.)
+[[rules]]
+name    = "lock_followed_by_unlock"
+pattern = "\\block\\s*\\("
+scope   = "**"
+message = "lock() confirmed to have a matching unlock() after it"
+severity = "info"
+chain   = [
+    { pattern = "\\bunlock\\s*\\(", relationship = "after" },
+]
+
+# Flag login() calls only when audit_log() appears somewhere in the same class
+# (i.e., the class has at least some logging infrastructure).
+[[rules]]
+name    = "login_in_audited_class"
+pattern = "\\blogin\\s*\\("
+scope   = "**"
+message = "login() called in a class that contains audit_log()"
+severity = "info"
+chain   = [
+    { pattern = "\\baudit_log\\s*\\(", relationship = "anywhere_in_class" },
+]
+
+# Flag createConnection() only when closeConnection() exists somewhere in the
+# same namespace, suggesting the namespace at least models connection lifecycle.
+[[rules]]
+name    = "connection_lifecycle_present"
+pattern = "\\bcreateConnection\\s*\\("
+scope   = "**"
+message = "createConnection() paired with closeConnection() in namespace"
+severity = "info"
+chain   = [
+    { pattern = "\\bcloseConnection\\s*\\(", relationship = "anywhere_in_namespace" },
+]
