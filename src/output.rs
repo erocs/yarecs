@@ -159,7 +159,7 @@ fn write_sarif(out: &mut dyn Write, matches: &[ScanMatch]) -> io::Result<()> {
 
     // tool.driver ────────────────────────────────────────────────────────────
     writeln!(out, "    \"tool\": {{\"driver\": {{")?;
-    writeln!(out, "      \"name\": \"cish-scanner\",")?;
+    writeln!(out, "      \"name\": \"yarecs\",")?;
     writeln!(out, "      \"rules\": [")?;
     for (i, (id, (msg, sev))) in rule_list.iter().enumerate() {
         let comma = if i + 1 < rule_list.len() { "," } else { "" };

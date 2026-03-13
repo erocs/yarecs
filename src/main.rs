@@ -25,7 +25,7 @@ use scope::{print_scope_tree, profile_for_ext, ScopeParser};
 /// pattern and an optional scope filter (e.g. `**::MyClass::*`) that
 /// constrains where the pattern is searched.
 #[derive(Parser)]
-#[command(name = "cish-scanner", version, about)]
+#[command(name = "yarecs", version, about)]
 struct Args {
     /// Rules config file(s) (TOML); may be repeated to merge multiple rule sets
     #[arg(short, long, default_value = "rules.toml")]

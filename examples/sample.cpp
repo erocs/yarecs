@@ -1,4 +1,4 @@
-// sample.cpp – exercise file for cish-scanner
+// sample.cpp – exercise file for yarecs
 
 #include <memory>
 #include <cstdio>
