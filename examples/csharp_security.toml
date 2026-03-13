@@ -1,0 +1,485 @@
+# C# / .NET Security Rules
+#
+# Usage:
+#   cish-scanner --config examples/csharp_security.toml \
+#                --extensions cs \
+#                src/
+#
+# Rules translated from the semgrep community C# ruleset
+# (github.com/semgrep/semgrep-rules/tree/develop/csharp).
+# Rules requiring inter-statement taint tracking, metavariable comparisons,
+# or multi-step data-flow (SQL/LDAP/XPath injection, SSRF via taint) are omitted.
+# Web.config XML rules are generic-language patterns best reviewed separately.
+#
+# ── Scope notes ──────────────────────────────────────────────────────────────
+# scope = "**"    — matches everywhere (class fields, properties, method bodies)
+# scope = "**::*" — matches only inside named scopes (methods / constructors)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Deprecated / broken symmetric ciphers — DES, RC2
+# CWE-327 (Use of a Broken or Risky Cryptographic Algorithm)
+# Semgrep rule: use_deprecated_cipher_algorithm
+# ══════════════════════════════════════════════════════════════════════════════
+
+# DES and RC2 are broken symmetric ciphers removed from modern security baselines.
+# Replace with System.Security.Cryptography.Aes or ChaCha20Poly1305.
+[[rules]]
+name     = "cs_deprecated_cipher"
+pattern  = '\b(?:DES|RC2)\.Create\s*\('
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "DES/RC2 cipher — broken algorithm; replace with Aes.Create() or ChaCha20Poly1305"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ECB cipher mode — deterministic block cipher
+# CWE-327
+# Semgrep rule: use_ecb_mode
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ECB mode encrypts identical blocks identically — patterns in plaintext are
+# visible in ciphertext.  Use AesGcm or ChaCha20Poly1305 (authenticated encryption).
+[[rules]]
+name     = "cs_ecb_mode"
+pattern  = '\.(?:EncryptEcb|DecryptEcb)\s*\(|CipherMode\.ECB\b'
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "ECB cipher mode — identical blocks produce identical ciphertext; use AesGcm or ChaCha20Poly1305"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# RSA with PKCS#1 v1.5 padding
+# CWE-780 (Use of RSA Algorithm without OAEP)
+# Semgrep rule: use_weak_rsa_encryption_padding
+# ══════════════════════════════════════════════════════════════════════════════
+
+# PKCS#1 v1.5 encryption is vulnerable to Bleichenbacher oracle attacks.
+# Use RSAOaepKeyExchangeFormatter / RSAOaepKeyExchangeDeformatter with OAEP padding.
+[[rules]]
+name     = "cs_rsa_pkcs1_padding"
+pattern  = '\bRSAPKCS1KeyExchange(?:Formatter|Deformatter)\b'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "RSAPKCS1 padding — vulnerable to Bleichenbacher oracle; use RSAOaepKeyExchangeFormatter with OAEP"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Weak / predictable RNG — System.Random
+# CWE-338 (Use of Cryptographically Weak PRNG)
+# Semgrep rule: use_weak_rng_for_keygeneration
+# ══════════════════════════════════════════════════════════════════════════════
+
+# System.Random is a deterministic PRNG; its output is predictable.
+# Never use it to generate cryptographic keys, tokens, salts, or nonces.
+# Use System.Security.Cryptography.RandomNumberGenerator instead.
+[[rules]]
+name     = "cs_system_random"
+pattern  = '\bnew\s+(?:System\.)?Random\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "System.Random — predictable PRNG; use RandomNumberGenerator.GetBytes() for security-sensitive values"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Unsafe deserialization — BinaryFormatter / LosFormatter / SoapFormatter
+# CWE-502 (Deserialization of Untrusted Data)
+# Semgrep rules: binary-formatter, los-formatter, soap-formatter
+# ══════════════════════════════════════════════════════════════════════════════
+
+# BinaryFormatter, LosFormatter, and SoapFormatter execute arbitrary type
+# constructors during deserialization — any attacker-supplied stream enables RCE.
+# Microsoft has deprecated all three and marks them as insecure by design.
+[[rules]]
+name     = "cs_binary_formatter"
+pattern  = '\bnew\s+BinaryFormatter\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "BinaryFormatter — insecure deserialization; enables RCE via gadget chains; replace with System.Text.Json or protobuf"
+
+[[rules]]
+name     = "cs_los_formatter"
+pattern  = '\bnew\s+LosFormatter\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "LosFormatter — insecure deserialization; enables RCE; replace with System.Text.Json"
+
+[[rules]]
+name     = "cs_soap_formatter"
+pattern  = '\bnew\s+SoapFormatter\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "SoapFormatter — insecure deserialization; enables RCE; replace with System.Text.Json"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Unsafe deserialization — NetDataContractSerializer
+# CWE-502
+# Semgrep rule: net-data-contract
+# ══════════════════════════════════════════════════════════════════════════════
+
+# NetDataContractSerializer embeds .NET type information in the stream.
+# An attacker can supply a malicious type to trigger RCE.
+[[rules]]
+name     = "cs_net_data_contract_serializer"
+pattern  = '\bnew\s+NetDataContractSerializer\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "NetDataContractSerializer — insecure; embeds type names enabling RCE; replace with DataContractSerializer + known-type allowlist"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Unsafe deserialization — JavaScriptSerializer
+# CWE-502
+# Semgrep rule: javascript-serializer
+# ══════════════════════════════════════════════════════════════════════════════
+
+# JavaScriptSerializer with SimpleTypeResolver allows arbitrary type instantiation
+# during JSON deserialization, enabling remote code execution.
+[[rules]]
+name     = "cs_javascript_serializer"
+pattern  = '\bnew\s+JavaScriptSerializer\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "JavaScriptSerializer — unsafe if SimpleTypeResolver is passed; use System.Text.Json or Newtonsoft.Json with TypeNameHandling.None"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Unsafe deserialization — FsPickler
+# CWE-502
+# Semgrep rule: fs-pickler
+# ══════════════════════════════════════════════════════════════════════════════
+
+# FsPickler.CreateJsonSerializer() uses full subtype resolution by default,
+# enabling arbitrary class instantiation from a malicious JSON stream.
+[[rules]]
+name     = "cs_fspickler"
+pattern  = '\bFsPickler\.CreateJsonSerializer\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "FsPickler.CreateJsonSerializer — unsafe subtype resolution by default; disable with allowSubtypes: false"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Unsafe deserialization — Newtonsoft TypeNameHandling
+# CWE-502
+# Semgrep rule: newtonsoft
+# ══════════════════════════════════════════════════════════════════════════════
+
+# TypeNameHandling.All / Auto / Objects / Arrays embed .NET type names in JSON.
+# A malicious client can substitute any type, leading to RCE via gadget chains.
+# Use TypeNameHandling.None and a custom SerializationBinder if type names are required.
+[[rules]]
+name     = "cs_newtonsoft_type_name_handling"
+pattern  = 'TypeNameHandling\s*=\s*TypeNameHandling\.(?:All|Auto|Objects|Arrays)\b'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "Newtonsoft TypeNameHandling != None — enables arbitrary type instantiation via JSON; use TypeNameHandling.None with a SerializationBinder allowlist"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Unsafe deserialization — fastJSON BadListTypeChecking
+# CWE-502
+# Semgrep rule: fast-json
+# ══════════════════════════════════════════════════════════════════════════════
+
+# BadListTypeChecking = false disables type-safety checks in fastJSON's $type
+# extension, allowing arbitrary type instantiation from an untrusted JSON stream.
+[[rules]]
+name     = "cs_fastjson_bad_list_type"
+pattern  = 'BadListTypeChecking\s*=\s*false'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "fastJSON BadListTypeChecking = false — disables $type safety; arbitrary class instantiation from JSON stream"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Unsafe deserialization — DataContractResolver subclass
+# CWE-502
+# Semgrep rule: data-contract-resolver
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Subclassing DataContractResolver to resolve types at runtime can expose the
+# application to unexpected or malicious type instantiation.
+[[rules]]
+name     = "cs_data_contract_resolver"
+pattern  = '\bclass\s+\w[\w<>]*\s*:\s*DataContractResolver\b'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "DataContractResolver subclass — review resolved types; malicious streams can instantiate unexpected classes"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# .NET Remoting — TypeFilterLevel.Full / Low
+# CWE-502
+# Semgrep rule: insecure-typefilterlevel-full
+# ══════════════════════════════════════════════════════════════════════════════
+
+# .NET Remoting with BinaryServerFormatterSinkProvider is inherently vulnerable
+# to deserialization attacks regardless of TypeFilterLevel setting.
+# Migrate to WCF or gRPC.
+[[rules]]
+name     = "cs_typefilterlevel"
+pattern  = 'TypeFilterLevel\.(?:Full|Low)\b'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "TypeFilterLevel.Full/Low — .NET Remoting is insecure by design; migrate to WCF or gRPC"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# OS command injection — Process.Start
+# CWE-78 (OS Command Injection)
+# Semgrep rule: os-command-injection
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Process.Start passes its argument to the OS.  Any unvalidated user-controlled
+# fragment enables command injection.  Use a fixed command with validated args.
+[[rules]]
+name     = "cs_process_start"
+pattern  = '\bProcess\.Start\s*\('
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "Process.Start() — passes arguments to the OS; verify no user-controlled data in command or arguments"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SSRF — HTTP client constructors
+# CWE-918 (Server-Side Request Forgery)
+# Semgrep rules: http-client, rest-client, web-client, web-request
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Flag HTTP client construction for SSRF review.  If any URL argument originates
+# from user input without allowlist validation, SSRF is possible.
+[[rules]]
+name     = "cs_http_client"
+pattern  = '\bnew\s+HttpClient\s*\('
+scope    = "**"
+search   = "code"
+severity = "info"
+message  = "HttpClient — verify URL is not user-controlled or is validated against an allowlist to prevent SSRF"
+
+[[rules]]
+name     = "cs_web_client"
+pattern  = '\bnew\s+WebClient\s*\('
+scope    = "**"
+search   = "code"
+severity = "info"
+message  = "WebClient (deprecated) — verify URL is not user-controlled; consider HttpClient with SSRF validation"
+
+[[rules]]
+name     = "cs_web_request"
+pattern  = '\bWebRequest\.Create\s*\('
+scope    = "**"
+search   = "code"
+severity = "info"
+message  = "WebRequest.Create() — verify URL is not user-controlled or validated against an allowlist to prevent SSRF"
+
+[[rules]]
+name     = "cs_rest_client"
+pattern  = '\bnew\s+RestClient\s*\('
+scope    = "**"
+search   = "code"
+severity = "info"
+message  = "RestClient — verify base URL is not user-controlled or validated against an allowlist to prevent SSRF"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# JWT — unsigned tokens / no expiry validation
+# CWE-347 (Improper Verification of Cryptographic Signature)
+# CWE-613 (Insufficient Session Expiration)
+# Semgrep rules: unsigned-security-token, jwt-tokenvalidationparameters-no-expiry-validation
+# ══════════════════════════════════════════════════════════════════════════════
+
+# RequireSignedTokens = false causes the JWT library to accept unsigned tokens,
+# allowing an attacker to forge any identity by removing the signature.
+[[rules]]
+name     = "cs_jwt_unsigned_tokens"
+pattern  = 'RequireSignedTokens\s*=\s*false'
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "RequireSignedTokens = false — unsigned JWT tokens accepted as valid; set to true to enforce signature verification"
+
+# Disabling lifetime validation means expired tokens remain valid indefinitely.
+[[rules]]
+name     = "cs_jwt_no_lifetime_validation"
+pattern  = '(?:RequireExpirationTime|ValidateLifetime)\s*=\s*false'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "JWT lifetime validation disabled — expired tokens accepted; set RequireExpirationTime and ValidateLifetime to true"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# XXE — XML External Entity injection
+# CWE-611 (Improper Restriction of XML External Entity Reference)
+# Semgrep rules: xmldocument-unsafe-parser-override, xmlreadersettings-unsafe-parser-override,
+#                xmltextreader-unsafe-defaults
+# ══════════════════════════════════════════════════════════════════════════════
+
+# XmlResolver = new XmlUrlResolver() re-enables external entity resolution on an
+# XmlDocument that had it disabled, restoring the XXE attack surface.
+[[rules]]
+name     = "cs_xmlresolver_url"
+pattern  = '\.XmlResolver\s*=\s*new\s+XmlUrlResolver\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "XmlUrlResolver — re-enables external entity resolution; set XmlResolver = null to prevent XXE"
+
+# DtdProcessing.Parse enables DTD processing and external entity resolution.
+# Use DtdProcessing.Prohibit (safest) or DtdProcessing.Ignore.
+[[rules]]
+name     = "cs_dtd_processing_parse"
+pattern  = 'DtdProcessing\.Parse\b'
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "DtdProcessing.Parse — enables DTD and external entity processing; use DtdProcessing.Prohibit to prevent XXE"
+
+# XmlTextReader has external entity resolution enabled by default in .NET < 4.5.1.
+# Always set DtdProcessing = DtdProcessing.Prohibit.
+[[rules]]
+name     = "cs_xmltextreader"
+pattern  = '\bnew\s+XmlTextReader\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "XmlTextReader — external entities enabled by default on .NET < 4.5.1; explicitly set DtdProcessing = DtdProcessing.Prohibit"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Stack trace disclosure in non-development environments
+# CWE-209 (Error Message Containing Sensitive Information)
+# Semgrep rule: stacktrace-disclosure
+# ══════════════════════════════════════════════════════════════════════════════
+
+# UseDeveloperExceptionPage exposes full stack traces, source locations, and
+# query string values in HTTP error responses.  Must only run when IsDevelopment().
+[[rules]]
+name     = "cs_developer_exception_page"
+pattern  = '\.UseDeveloperExceptionPage\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "UseDeveloperExceptionPage() — exposes full stack traces; restrict to if (env.IsDevelopment()) blocks"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Directory browsing exposed
+# CWE-548 (Information Exposure Through Directory Listing)
+# Semgrep rule: open-directory-listing
+# ══════════════════════════════════════════════════════════════════════════════
+
+# UseDirectoryBrowser serves directory listings to all clients.
+# Remove in production or restrict to authenticated/authorised principals.
+[[rules]]
+name     = "cs_directory_browser"
+pattern  = '\.UseDirectoryBrowser\s*\(|\.AddDirectoryBrowser\s*\('
+scope    = "**"
+search   = "code"
+severity = "info"
+message  = "UseDirectoryBrowser — exposes directory listings; remove from production or restrict with authentication"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Lockout disabled on sign-in — brute-force protection
+# CWE-307 (Improper Restriction of Excessive Authentication Attempts)
+# Semgrep rule: misconfigured-lockout-option
+# ══════════════════════════════════════════════════════════════════════════════
+
+# lockoutOnFailure: false disables account lockout on bad password, allowing
+# unlimited brute-force attempts against user accounts.
+[[rules]]
+name     = "cs_lockout_disabled"
+pattern  = 'lockoutOnFailure\s*:\s*false'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "lockoutOnFailure: false — disables account lockout; enables unlimited brute-force attacks; set to true"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# XSS — HtmlString / Html.Raw
+# CWE-79 (Cross-Site Scripting)
+# Semgrep rules: razor-use-of-htmlstring, html-raw-json
+# ══════════════════════════════════════════════════════════════════════════════
+
+# HtmlString bypasses Razor's automatic HTML encoding.
+# If any argument is user-controlled the output is a stored/reflected XSS vector.
+[[rules]]
+name     = "cs_htmlstring"
+pattern  = '\bnew\s+\w*HtmlString\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "HtmlString — bypasses Razor HTML encoding; ensure argument is not user-controlled or is pre-encoded"
+
+# Html.Raw(Json.Encode(...)) or Html.Raw(JsonConvert.Serialize...) outputs JSON
+# directly into HTML without escaping </script>, creating an XSS vector.
+[[rules]]
+name     = "cs_html_raw"
+pattern  = '@Html\.Raw\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "Html.Raw() — outputs unencoded HTML; use @Html.Raw(Html.Encode(...)) or avoid Json in script blocks without escaping"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Regex without timeout — ReDoS
+# CWE-1333 (Inefficient Regular Expression Complexity)
+# Semgrep rules: regular-expression-dos, regular-expression-dos-infinite-timeout
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Regex without a timeout allows malicious input to trigger catastrophic
+# backtracking, causing a CPU-exhaustion denial-of-service.
+# Pass a TimeSpan (e.g. TimeSpan.FromSeconds(2)) as the third argument to new Regex().
+[[rules]]
+name     = "cs_regex_no_timeout"
+pattern  = '\bnew\s+Regex\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "new Regex() — add a timeout argument (e.g. TimeSpan.FromSeconds(2)) to prevent ReDoS via catastrophic backtracking"
+
+# Explicitly specifying Regex.InfiniteMatchTimeout removes all protection.
+[[rules]]
+name     = "cs_regex_infinite_timeout"
+pattern  = '\bTimeSpan\.InfiniteMatchTimeout\b'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "Regex.InfiniteMatchTimeout — no backtracking time limit; set a short finite timeout to prevent ReDoS"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Unsafe memory operations — MemoryMarshal
+# CWE-125 (Out-of-bounds Read)
+# Semgrep rule: memory-marshal-create-span
+# ══════════════════════════════════════════════════════════════════════════════
+
+# MemoryMarshal.CreateSpan / CreateReadOnlySpan do not validate the length argument
+# against the actual allocation — passing a too-large length causes out-of-bounds reads.
+[[rules]]
+name     = "cs_memory_marshal_span"
+pattern  = '\bMemoryMarshal\.Create(?:ReadOnly)?Span\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "MemoryMarshal.CreateSpan/CreateReadOnlySpan — length is not bounds-checked; verify length <= actual buffer size"

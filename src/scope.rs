@@ -331,8 +331,21 @@ fn classify_header(header: &[Token], profile: &LanguageProfile) -> (ScopeKind, S
         }
     }
 
-    // Control-flow check: first word is a control keyword → anonymous block.
-    if profile.control_flow.contains(&words[0]) {
+    // Control-flow check: any word in the header is a control keyword → anonymous block.
+    //
+    // Checking only `words[0]` was insufficient for languages without mandatory
+    // semicolons (Kotlin, Swift, Go).  In those languages the header accumulates
+    // all tokens since the previous `{` or `}`, which may include several complete
+    // statements.  The C/C++ heuristic below would then fire on an incidental
+    // call like `MessageDigest.getInstance(…)` before ever seeing the `for`/`if`
+    // keyword at the end of the header.  Checking any word fixes that:
+    //   `val md: MessageDigest = … getInstance("SHA-1")  for (b in xs)`
+    //   → `for` found anywhere → Block  ✓
+    //
+    // Steps 1 (scope keywords) and 2 (fn keywords) already returned early for
+    // valid class/function declarations, so no real declaration header reaches here
+    // with a control keyword embedded in it.
+    if words.iter().any(|&w| profile.control_flow.contains(&w)) {
         return (ScopeKind::Block, String::new());
     }
 

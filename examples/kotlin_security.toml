@@ -1,0 +1,228 @@
+# Kotlin Security Rules
+#
+# Usage:
+#   cish-scanner --config examples/kotlin_security.toml \
+#                --extensions kt,kts \
+#                src/
+#
+# Rules translated from the semgrep community Kotlin ruleset
+# (github.com/semgrep/semgrep-rules/tree/develop/kotlin/lang/security).
+# Omitted (not translatable as regex):
+#   use-of-weak-rsa-key  — METAVAR-CMP: KeyPairGenerator.initialize($BITS) where $BITS < 2048
+#   bad-hexa-conversion  — included below via chain rule (approximation)
+#   cookie-missing-httponly / cookie-missing-secure-flag (PATTERN-NOT: addCookie without prior
+#     setHttpOnly/setSecure) — partially covered by the explicit-false variants below
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Anonymous LDAP bind
+# CWE-287 (Improper Authentication)
+# Semgrep rule: anonymous-ldap-bind
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Setting SECURITY_AUTHENTICATION to "none" allows anonymous LDAP queries,
+# bypassing authentication entirely.
+[[rules]]
+name     = "kt_anonymous_ldap_bind"
+pattern  = '\.put\s*\([^)]*SECURITY_AUTHENTICATION[^)]*"none"'
+scope    = "**"
+search   = "all"
+severity = "warning"
+message  = "Anonymous LDAP bind — SECURITY_AUTHENTICATION set to \"none\" allows unauthenticated directory access; use \"simple\" or SASL"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Insecure hex conversion of hash bytes
+# CWE-704 (Incorrect Type Conversion or Cast)
+# Semgrep rule: bad-hexa-conversion
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Integer.toHexString() drops leading zeroes, so a hash byte 0x0a becomes "a"
+# instead of "0a".  This reduces the collision resistance of the hex-encoded
+# hash string.  Use String.format("%02X", b) or "%02x" instead.
+[[rules]]
+name     = "kt_hexa_conversion"
+pattern  = '\bInteger\.toHexString\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "Integer.toHexString() strips leading zeroes — use String.format(\"%02x\", b) to encode hash bytes; otherwise two different hashes may produce the same hex string"
+chain    = [
+    { pattern = "MessageDigest", relationship = "anywhere_in_method", negate = false },
+]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Command injection via Runtime.exec / loadLibrary
+# CWE-78 (OS Command Injection)
+# Semgrep rule: command-injection-formatted-runtime-call
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Passing a formatted or concatenated string to Runtime.exec() or
+# loadLibrary() enables command injection if any component is user-controlled.
+# Validate and allowlist all arguments, or replace exec() with ProcessBuilder
+# with a pre-split argument list.
+[[rules]]
+name     = "kt_runtime_exec"
+pattern  = '\.exec\s*\([^)\n]*\+|\.exec\s*\(\s*String\.format\s*\(|\.loadLibrary\s*\([^)\n]*\+|\.loadLibrary\s*\(\s*String\.format\s*\('
+scope    = "**"
+search   = "all"
+severity = "error"
+message  = "Runtime.exec/loadLibrary with concatenated or formatted argument — may allow command injection; use ProcessBuilder with a pre-split argument list"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Cookie — HttpOnly flag explicitly disabled
+# CWE-1004 (Sensitive Cookie Without HttpOnly Flag)
+# Semgrep rule: cookie-missing-httponly (explicit-false variant)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# setHttpOnly(false) allows client-side JavaScript to read the cookie,
+# enabling session theft via XSS.
+[[rules]]
+name     = "kt_cookie_httponly_false"
+pattern  = '\.setHttpOnly\s*\(\s*false\s*\)'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "Cookie.setHttpOnly(false) — JavaScript can read this cookie; set HttpOnly to true to prevent XSS-based session theft"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Cookie — Secure flag explicitly disabled
+# CWE-614 (Sensitive Cookie Without Secure Attribute)
+# Semgrep rule: cookie-missing-secure-flag (explicit-false variant)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# setSecure(false) allows the cookie to be transmitted over plain HTTP,
+# enabling interception by a network attacker.
+[[rules]]
+name     = "kt_cookie_secure_false"
+pattern  = '\.setSecure\s*\(\s*false\s*\)'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "Cookie.setSecure(false) — cookie will be sent over HTTP; set Secure to true to restrict to HTTPS"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Deprecated HTTP client — DefaultHttpClient
+# CWE-326 (Inadequate Encryption Strength)
+# Semgrep rule: defaulthttpclient-is-deprecated
+# ══════════════════════════════════════════════════════════════════════════════
+
+# DefaultHttpClient is deprecated and does not support TLS 1.2, making HTTPS
+# connections vulnerable to downgrade attacks.  Use SystemDefaultHttpClient,
+# CloseableHttpClient, or OkHttpClient instead.
+[[rules]]
+name     = "kt_default_http_client"
+pattern  = '\bDefaultHttpClient\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "DefaultHttpClient is deprecated and lacks TLS 1.2 support — use SystemDefaultHttpClient or OkHttpClient"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ECB cipher mode
+# CWE-327 (Use of Broken or Risky Cryptographic Algorithm)
+# Semgrep rule: ecb-cipher
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ECB mode encrypts each block independently; identical plaintext blocks
+# produce identical ciphertext, leaking data patterns.  Use GCM or CBC with
+# a random IV.
+[[rules]]
+name     = "kt_ecb_cipher"
+pattern  = '\bCipher\.getInstance\s*\([^)]*ECB'
+scope    = "**"
+search   = "all"
+severity = "warning"
+message  = "Cipher in ECB mode — ECB leaks data patterns; use AES/GCM/NoPadding or AES/CBC/PKCS7PADDING with a random IV"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GCM mode — IV / nonce reuse risk
+# CWE-323 (Reusing a Nonce, Key Pair in Encryption)
+# Semgrep rule: gcm-detection
+# ══════════════════════════════════════════════════════════════════════════════
+
+# GCM security depends entirely on IV uniqueness per (key, message) pair.
+# Reusing the IV allows an attacker to recover the authentication key and
+# decrypt ciphertext.  Verify the IV is generated freshly with SecureRandom.
+[[rules]]
+name     = "kt_gcm_nonce_reuse"
+pattern  = '\bGCMParameterSpec\s*\(|\bCipher\.getInstance\s*\(\s*"AES/GCM/'
+scope    = "**"
+search   = "all"
+severity = "info"
+message  = "AES/GCM detected — verify the IV/nonce is generated with SecureRandom and never reused for the same key"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# NullCipher — no encryption performed
+# CWE-327 (Use of Broken or Risky Cryptographic Algorithm)
+# Semgrep rule: no-null-cipher
+# ══════════════════════════════════════════════════════════════════════════════
+
+# NullCipher is a no-op: ciphertext equals plaintext.  It exists only for
+# testing; using it in production transmits data in the clear.
+[[rules]]
+name     = "kt_null_cipher"
+pattern  = '\bNullCipher\s*\('
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "NullCipher — performs no encryption; ciphertext is identical to plaintext; use Cipher.getInstance(\"AES/GCM/NoPadding\")"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Unencrypted socket
+# CWE-319 (Cleartext Transmission of Sensitive Information)
+# Semgrep rule: unencrypted-socket
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Socket() and ServerSocket() constructors create plain TCP connections.
+# Traffic can be intercepted and read by a network attacker.  Create sockets
+# via SSLSocketFactory or SSLServerSocketFactory for TLS encryption.
+[[rules]]
+name     = "kt_unencrypted_socket"
+pattern  = '\b(?:ServerSocket|Socket)\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "Unencrypted Socket/ServerSocket — use SSLSocketFactory or SSLServerSocketFactory for TLS-encrypted connections"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Weak hash — MD5
+# CWE-328 (Use of Weak Hash)
+# Semgrep rule: use-of-md5
+# ══════════════════════════════════════════════════════════════════════════════
+
+# MD5 is broken for collision resistance and must not be used for digital
+# signatures, certificate fingerprints, or password hashing.
+[[rules]]
+name     = "kt_weak_hash_md5"
+pattern  = '\bMessageDigest\.getInstance\s*\(\s*"MD5"|\bDigestUtils\.getMd5Digest\s*\('
+scope    = "**"
+search   = "all"
+severity = "error"
+message  = "MD5 hash — collision attacks exist; use SHA-256 (MessageDigest.getInstance(\"SHA-256\")) or SHA-3 for integrity checks"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Weak hash — SHA-1
+# CWE-327 (Use of Broken or Risky Cryptographic Algorithm)
+# Semgrep rule: use-of-sha1
+# ══════════════════════════════════════════════════════════════════════════════
+
+# SHA-1 has been practically broken for collision resistance since SHAttered
+# (2017).  Prefer SHA-256 or SHA-3 for new code.
+[[rules]]
+name     = "kt_weak_hash_sha1"
+pattern  = '\bMessageDigest\.getInstance\s*\(\s*"SHA-?1"|\bDigestUtils\.getSha1Digest\s*\('
+scope    = "**"
+search   = "all"
+severity = "warning"
+message  = "SHA-1 hash — practically broken since SHAttered (2017); use SHA-256 or SHA-3 instead"

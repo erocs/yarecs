@@ -27,9 +27,9 @@ use scope::{print_scope_tree, profile_for_ext, ScopeParser};
 #[derive(Parser)]
 #[command(name = "cish-scanner", version, about)]
 struct Args {
-    /// Rules config file (TOML)
+    /// Rules config file(s) (TOML); may be repeated to merge multiple rule sets
     #[arg(short, long, default_value = "rules.toml")]
-    config: PathBuf,
+    config: Vec<PathBuf>,
 
     /// Files or directories to scan
     #[arg(required = true)]
@@ -64,7 +64,12 @@ fn main() -> Result<()> {
     let rules = if args.dump_scopes {
         Vec::new() // no rules needed for scope dump
     } else {
-        load_rules(&args.config)?
+        let mut all_rules = Vec::new();
+        for config_path in &args.config {
+            let mut r = load_rules(config_path)?;
+            all_rules.append(&mut r);
+        }
+        all_rules
     };
 
     let mut all_matches: Vec<ScanMatch> = Vec::new();

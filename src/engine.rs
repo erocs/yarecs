@@ -263,7 +263,12 @@ fn chain_satisfied(
         let search: Range<usize> = match cp.relationship {
             ChainRelationship::After => trigger_end..body.end,
             ChainRelationship::Before => body.start..trigger_start,
-            ChainRelationship::AnywhereInMethod => body.clone(),
+            ChainRelationship::AnywhereInMethod => {
+                match nearest_of_kind(ancestors, current_node, &[ScopeKind::Function]) {
+                    Some(n) => n.body_range(),
+                    None    => body.clone(), // no enclosing function; fall back to current scope
+                }
+            }
             ChainRelationship::AnywhereInClass => {
                 match nearest_of_kind(ancestors, current_node, &[ScopeKind::Class, ScopeKind::Struct]) {
                     Some(n) => n.body_range(),

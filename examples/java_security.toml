@@ -1,0 +1,555 @@
+# Java Security and Correctness Rules
+#
+# Usage:
+#   cish-scanner --config examples/java_security.toml \
+#                --extensions java \
+#                src/
+#
+# Rules translated from the semgrep community Java ruleset
+# (github.com/semgrep/semgrep-rules/tree/develop/java).
+# Rules requiring inter-statement taint tracking, metavariable comparisons,
+# or multi-statement flow (e.g. SQL injection via concatenation, hard-coded
+# credential flow) cannot be expressed as regex and are omitted.
+#
+# ── Scope notes ──────────────────────────────────────────────────────────────
+# scope = "**"     — matches everywhere including file scope
+# scope = "**::*"  — matches only inside named scopes (methods / constructors)
+# Most audit rules use "**" so that static initialisers and field declarations
+# are not silently excluded.
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Weak / broken symmetric ciphers
+# CWE-327 (Use of a Broken or Risky Cryptographic Algorithm)
+# Semgrep rules: use-of-blowfish, use-of-rc4, use-of-rc2
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Blowfish has a 64-bit block size; SWEET32 birthday attack makes it unsafe
+# for long-running TLS sessions.  Prefer AES-256-GCM.
+[[rules]]
+name     = "java_weak_cipher_blowfish"
+pattern  = '\.getInstance\s*\(\s*"Blowfish"\s*\)'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "Blowfish cipher — 64-bit block size vulnerable to SWEET32; use AES/GCM/NoPadding"
+
+# RC4 is a broken stream cipher with key-scheduling biases exploited in BEAST/RC4NOMORE.
+[[rules]]
+name     = "java_weak_cipher_rc4"
+pattern  = '\.getInstance\s*\(\s*"RC4"\s*\)'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "RC4 cipher — broken stream cipher; use AES/GCM/NoPadding"
+
+# RC2 is a legacy cipher with known differential weaknesses; forbidden by NIST.
+[[rules]]
+name     = "java_weak_cipher_rc2"
+pattern  = '\.getInstance\s*\(\s*"RC2"\s*\)'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "RC2 cipher — legacy weak cipher forbidden by NIST; use AES/GCM/NoPadding"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DES / 3DES — deprecated block ciphers
+# CWE-327
+# Semgrep rules: des-is-deprecated, desede-is-deprecated
+# ══════════════════════════════════════════════════════════════════════════════
+
+# DES has a 56-bit effective key; exhaustive search is feasible in hours.
+[[rules]]
+name     = "java_cipher_des"
+pattern  = '\.getInstance\s*\(\s*"DES[/"]'
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "DES cipher — 56-bit key, broken; use AES/GCM/NoPadding"
+
+# Triple-DES (DESede) has 112-bit effective strength and a 64-bit block (SWEET32).
+[[rules]]
+name     = "java_cipher_desede"
+pattern  = '\.getInstance\s*\(\s*"DESede'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "DESede (3DES) cipher — 64-bit block (SWEET32), deprecated; use AES/GCM/NoPadding"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ECB mode — deterministic block cipher mode leaks patterns
+# CWE-327
+# Semgrep rules: ecb-cipher, use-of-aes-ecb
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ECB encrypts identical 16-byte blocks identically — the "ECB penguin" problem.
+# Plaintext structure is visible in ciphertext.  Use GCM or CBC with a random IV.
+[[rules]]
+name     = "java_cipher_ecb_mode"
+pattern  = '\.getInstance\s*\([^)]*ECB[^)]*\)'
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "ECB cipher mode — deterministic; identical blocks produce identical ciphertext; use AES/GCM/NoPadding"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AES without explicit mode
+# CWE-327
+# Semgrep rule: use-of-default-aes
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Cipher.getInstance("AES") defaults to ECB mode in most JVM implementations.
+# Always specify mode and padding explicitly: "AES/GCM/NoPadding".
+[[rules]]
+name     = "java_cipher_aes_no_mode"
+pattern  = '\.getInstance\s*\(\s*"AES"\s*\)'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "AES without mode — defaults to ECB in most JVMs; specify AES/GCM/NoPadding explicitly"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CBC / PKCS5Padding — padding oracle vulnerability
+# CWE-327
+# Semgrep rule: cbc-padding-oracle
+# ══════════════════════════════════════════════════════════════════════════════
+
+# CBC with PKCS#5 padding is vulnerable to padding oracle attacks (POODLE, Lucky13)
+# when the decryption result is observable by an attacker.
+# Prefer AES/GCM/NoPadding which provides authenticated encryption.
+[[rules]]
+name     = "java_cbc_pkcs5padding"
+pattern  = '\.getInstance\s*\([^)]*CBC/PKCS5Padding[^)]*\)'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "AES/CBC/PKCS5Padding — padding oracle risk (POODLE/Lucky13); prefer AES/GCM/NoPadding"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# RSA without padding
+# CWE-780 (Use of RSA Algorithm without OAEP)
+# Semgrep rule: rsa-no-padding
+# ══════════════════════════════════════════════════════════════════════════════
+
+# RSA/None/NoPadding is textbook RSA — deterministic and malleable.
+# Attackers can forge ciphertexts and recover plaintext.  Use RSA/ECB/OAEPWithSHA-256AndMGF1Padding.
+[[rules]]
+name     = "java_rsa_no_padding"
+pattern  = '\.getInstance\s*\(\s*"RSA[^"]*NoPadding"'
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "RSA without padding — textbook RSA is malleable; use OAEP (RSA/ECB/OAEPWithSHA-256AndMGF1Padding)"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# NullCipher — no encryption
+# CWE-327
+# Semgrep rule: no-null-cipher
+# ══════════════════════════════════════════════════════════════════════════════
+
+# NullCipher performs no encryption; its only legitimate uses are unit-testing
+# crypto pipelines.  Any production path that reaches NullCipher transmits plaintext.
+[[rules]]
+name     = "java_null_cipher"
+pattern  = '\bnew\s+(?:javax\.crypto\.)?NullCipher\s*\('
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "NullCipher — performs no encryption; data transmitted as plaintext"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Weak hash functions — MD5 / SHA-1
+# CWE-327, CWE-328
+# Semgrep rules: use-of-md5, use-of-sha1
+# ══════════════════════════════════════════════════════════════════════════════
+
+# MD5 is collision-broken (Wang 2004) and pre-image attacks are practical for short inputs.
+# Never use for password hashing, certificate fingerprints, or data integrity.
+[[rules]]
+name     = "java_md5_digest"
+pattern  = 'MessageDigest\.getInstance\s*\(\s*"MD5"'
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "MD5 hash — collision-broken; use SHA-256 or SHA-3 for integrity, bcrypt/Argon2 for passwords"
+
+# MD5 via Apache Commons DigestUtils helper methods.
+[[rules]]
+name     = "java_md5_digest_utils"
+pattern  = '\bDigestUtils\.(?:getMd5Digest|md5|md5Hex)\s*\('
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "MD5 via DigestUtils — collision-broken; use DigestUtils.getSha256Digest() or SHA-3"
+
+# SHA-1 has known collision attacks (SHAttered, 2017).  Forbidden by NIST for
+# digital signatures and certificates.
+[[rules]]
+name     = "java_sha1_digest"
+pattern  = 'MessageDigest\.getInstance\s*\(\s*"SHA-?1"'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "SHA-1 hash — collision-broken (SHAttered); use SHA-256 or SHA-3"
+
+# SHA-1 via Apache Commons DigestUtils.
+[[rules]]
+name     = "java_sha1_digest_utils"
+pattern  = '\bDigestUtils\.(?:getSha1Digest|sha1|sha1Hex)\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "SHA-1 via DigestUtils — collision-broken; use DigestUtils.getSha256Digest() or SHA-3"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Custom MessageDigest implementation
+# CWE-327
+# Semgrep rule: avoid-implementing-custom-digests
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Implementing a custom digest by extending MessageDigest bypasses JCA provider
+# validation and typically introduces non-standard (insecure) algorithms.
+# Use a standard algorithm from a vetted provider (SunJCE, Bouncy Castle, etc.).
+[[rules]]
+name     = "java_custom_message_digest"
+pattern  = '\bextends\s+MessageDigest\b'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "Custom MessageDigest subclass — rolling your own digest is error-prone; use a standard algorithm"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Weak / predictable RNG
+# CWE-338 (Use of Cryptographically Weak PRNG)
+# Semgrep rule: weak-random
+# ══════════════════════════════════════════════════════════════════════════════
+
+# java.util.Random and Math.random() are linear-congruential generators.
+# Their output is predictable from a small number of observed values.
+# Use SecureRandom for tokens, session IDs, salts, and nonces.
+[[rules]]
+name     = "java_weak_random"
+pattern  = '\bnew\s+(?:java\.util\.)?Random\s*\(|Math\.random\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "java.util.Random / Math.random() — predictable LCG; use SecureRandom for security-sensitive values"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Unsafe deserialization — ObjectInputStream / XMLDecoder / SnakeYAML
+# CWE-502 (Deserialization of Untrusted Data)
+# Semgrep rules: object-deserialization, xml-decoder, use-snakeyaml-constructor
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Java's native serialization executes arbitrary readObject() / readResolve()
+# methods during deserialization.  Gadget chains in the classpath allow RCE.
+# Use a filtering ObjectInputStream (ObjectInputFilter, ValidatingObjectInputStream)
+# or replace with JSON/Protobuf deserialization.
+[[rules]]
+name     = "java_object_deserialization"
+pattern  = '\bnew\s+ObjectInputStream\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "ObjectInputStream — native Java deserialization enables gadget-chain RCE; add ObjectInputFilter or replace with JSON/Protobuf"
+
+# XMLDecoder interprets Java Bean XML and can instantiate arbitrary classes.
+# It is equivalent in risk to native Java deserialization.
+[[rules]]
+name     = "java_xml_decoder"
+pattern  = '\bnew\s+(?:java\.beans\.)?XMLDecoder\s*\('
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "XMLDecoder — can instantiate arbitrary classes from XML (RCE via bean serialization); use a restricted XML parser"
+
+# new Yaml() (no constructor arg) uses the full-trust constructor that can
+# instantiate arbitrary Java objects via !!java.lang.Runtime deserialization gadgets.
+# Use new Yaml(new SafeConstructor()) or new Yaml(new Constructor(ExpectedType.class)).
+[[rules]]
+name     = "java_snakeyaml_unsafe"
+pattern  = '\bnew\s+(?:org\.yaml\.snakeyaml\.)?Yaml\s*\(\s*\)'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "SnakeYAML Yaml() without SafeConstructor — arbitrary class instantiation via !!-tagged YAML; pass new SafeConstructor()"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Deprecated / insecure SSL/TLS
+# CWE-326 (Inadequate Encryption Strength), CWE-295 (Improper Certificate Validation)
+# Semgrep rules: defaulthttpclient-is-deprecated, unencrypted-socket,
+#                insecure-hostname-verifier
+# ══════════════════════════════════════════════════════════════════════════════
+
+# DefaultHttpClient is deprecated since HttpComponents 4.3 and does not enforce
+# modern TLS settings.  Use HttpClients.createDefault() (HttpClient 4.x) or
+# HttpClient.newBuilder() (Java 11+).
+[[rules]]
+name     = "java_default_http_client"
+pattern  = '\bnew\s+DefaultHttpClient\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "DefaultHttpClient deprecated — use HttpClientBuilder.create().build() or java.net.http.HttpClient"
+
+# Plain Socket / ServerSocket sends data in cleartext.
+# Use SSLSocket / SSLServerSocket (via SSLSocketFactory) for any sensitive channel.
+[[rules]]
+name     = "java_unencrypted_socket"
+pattern  = '\bnew\s+(?:Server)?Socket\s*\('
+scope    = "**"
+search   = "code"
+severity = "info"
+message  = "Plain Socket / ServerSocket — data transmitted in cleartext; use SSLSocket/SSLServerSocket for sensitive channels"
+
+# NoopHostnameVerifier disables hostname verification in Apache HttpComponents,
+# allowing MITM attacks against TLS connections.
+[[rules]]
+name     = "java_noop_hostname_verifier"
+pattern  = '\bNoopHostnameVerifier\b'
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "NoopHostnameVerifier — disables TLS hostname validation; enables MITM attacks"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Process / OS command execution
+# CWE-78 (OS Command Injection)
+# Semgrep rules: command-injection-formatted-runtime-call,
+#                command-injection-process-builder
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Runtime.exec() passes its argument directly to the OS.  Any unvalidated
+# string fragment from user input enables command injection.
+[[rules]]
+name     = "java_runtime_exec"
+pattern  = '\bRuntime\.getRuntime\s*\(\s*\)\s*\.exec\s*\('
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "Runtime.exec() — passes string to OS; validate and allowlist all arguments or use ProcessBuilder with a fixed command array"
+
+# ProcessBuilder with a variable first argument allows command injection.
+# Prefer a fixed string-array invocation: new ProcessBuilder("cmd", "--safe-arg").
+[[rules]]
+name     = "java_process_builder"
+pattern  = '\bnew\s+ProcessBuilder\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "ProcessBuilder — verify command array contains no user-controlled elements"
+
+# GroovyShell.parse() / evaluate() / parseClass() executes arbitrary Groovy code.
+# If any argument originates from user input this is remote code execution.
+[[rules]]
+name     = "java_groovy_shell"
+pattern  = '\bnew\s+(?:groovy\.lang\.)?(?:GroovyShell|GroovyClassLoader)\s*\('
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "GroovyShell / GroovyClassLoader — executes arbitrary code; never pass user-controlled input to parse()/evaluate()"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Java security manager — AccessController.doPrivileged
+# CWE-250 (Execution with Unnecessary Privileges)
+# Semgrep rule: do-privileged-use
+# ══════════════════════════════════════════════════════════════════════════════
+
+# doPrivileged() elevates code to run with the permissions of the calling class
+# regardless of the caller's context.  Misuse can grant untrusted callers
+# elevated access; confirm the privileged block is as narrow as possible.
+[[rules]]
+name     = "java_do_privileged"
+pattern  = 'AccessController\.doPrivileged\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "AccessController.doPrivileged() — confirm the privileged block is minimal and cannot be reached by untrusted callers"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Script engine injection
+# CWE-94 (Code Injection)
+# Semgrep rule: script-engine-injection
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ScriptEngine.eval() executes arbitrary JavaScript/Python/Groovy code.
+# Any user-controlled input reaching eval() is remote code execution.
+[[rules]]
+name     = "java_script_engine"
+pattern  = '\bScriptEngineManager\s*\(\s*\)'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "ScriptEngineManager — ScriptEngine.eval() executes arbitrary code; never pass user input to eval()"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# JWT — 'none' algorithm
+# CWE-347 (Improper Verification of Cryptographic Signature)
+# Semgrep rules: java-jwt-none-alg, jjwt-none-alg
+# ══════════════════════════════════════════════════════════════════════════════
+
+# The 'none' JWT algorithm means the token carries no signature.
+# A malicious client can forge any token payload and it will be accepted as valid.
+[[rules]]
+name     = "java_jwt_none_alg"
+pattern  = '\bAlgorithm\.none\s*\(\s*\)'
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "JWT Algorithm.none() — unsigned token accepted as valid; use a keyed algorithm (HS256, RS256)"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Spring Security — CSRF disabled
+# CWE-352 (Cross-Site Request Forgery)
+# Semgrep rule: spring-csrf-disabled
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Disabling CSRF protection removes the synchronizer-token check, allowing
+# cross-origin state-changing requests.  Only disable for stateless REST APIs
+# that use Bearer token authentication and explicitly cannot use cookies.
+[[rules]]
+name     = "java_spring_csrf_disabled"
+pattern  = '\.csrf\s*\(\s*\)\s*\.disable\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "Spring Security CSRF disabled — enables CSRF attacks; only disable for stateless Bearer-token APIs"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Spring Actuator — full exposure
+# CWE-200 (Exposure of Sensitive Information)
+# Semgrep rules: spring-actuator-fully-enabled, spring-actuator-dangerous-endpoints-enabled
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Exposing all actuator endpoints publishes /env (env vars + secrets),
+# /heapdump (heap dump with in-memory secrets), /loggers, and /shutdown.
+# Restrict to health/info or secure behind authentication.
+[[rules]]
+name     = "java_spring_actuator_expose_all"
+pattern  = 'management\.endpoints\.web\.exposure\.include\s*=\s*\*'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "Spring Actuator expose include=* — exposes /env, /heapdump, /shutdown; restrict to health,info or add authentication"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# XXE — XML External Entity injection
+# CWE-611 (Improper Restriction of XML External Entity Reference)
+# Semgrep rules: documentbuilderfactory-*, xmlinputfactory-*
+# ══════════════════════════════════════════════════════════════════════════════
+
+# DocumentBuilderFactory.newInstance() creates a parser with external entities
+# enabled by default in many JVM implementations.
+# Disable with:
+#   factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+#   factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
+[[rules]]
+name     = "java_xxe_document_builder"
+pattern  = 'DocumentBuilderFactory\.newInstance\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "DocumentBuilderFactory — external entities enabled by default; disable DTDs and external entity features to prevent XXE"
+
+# XMLInputFactory.newInstance() (StAX) also enables external entities by default.
+# Disable with:
+#   factory.setProperty(XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES, false);
+#   factory.setProperty(XMLInputFactory.SUPPORT_DTD, false);
+[[rules]]
+name     = "java_xxe_xmlinputfactory"
+pattern  = 'XMLInputFactory\.newInstance\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "XMLInputFactory (StAX) — external entities enabled by default; set IS_SUPPORTING_EXTERNAL_ENTITIES=false to prevent XXE"
+
+# SAXParserFactory.newInstance() — same XXE risk as DocumentBuilderFactory.
+[[rules]]
+name     = "java_xxe_sax_parser"
+pattern  = 'SAXParserFactory\.newInstance\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "SAXParserFactory — external entities enabled by default; disable external-general-entities and DTD features to prevent XXE"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Cookie security flags
+# CWE-614 (Sensitive Cookie Without Secure Attribute)
+# CWE-1004 (Sensitive Cookie Without HttpOnly Flag)
+# Semgrep rules: cookie-missing-httponly, cookie-missing-secure-flag
+# ══════════════════════════════════════════════════════════════════════════════
+
+# setHttpOnly(false) makes the cookie readable from JavaScript, enabling
+# session hijacking via XSS.
+[[rules]]
+name     = "java_cookie_httponly_false"
+pattern  = '\.setHttpOnly\s*\(\s*false\s*\)'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "Cookie.setHttpOnly(false) — cookie readable from JavaScript; enables session theft via XSS"
+
+# setSecure(false) allows the cookie to be sent over plain HTTP,
+# exposing it to network eavesdroppers.
+[[rules]]
+name     = "java_cookie_secure_false"
+pattern  = '\.setSecure\s*\(\s*false\s*\)'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "Cookie.setSecure(false) — cookie transmitted over plain HTTP; enables interception"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Overly permissive POSIX file permissions
+# CWE-732 (Incorrect Permission Assignment for Critical Resource)
+# Semgrep rule: overly-permissive-file-permission
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Granting OTHERS_READ, OTHERS_WRITE, or OTHERS_EXECUTE exposes the file to any
+# user on the system.  Use the minimum required permissions (owner-only for
+# configuration files, owner+group for shared resources).
+[[rules]]
+name     = "java_posix_others_permissions"
+pattern  = '\bPosixFilePermission\.OTHERS_(?:READ|WRITE|EXECUTE)\b'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "PosixFilePermission.OTHERS_* — grants world-readable/writable/executable access; use owner-only or group permissions"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Permissive CORS header
+# CWE-942 (Permissive Cross-domain Policy)
+# Semgrep rule: permissive-cors
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Setting Access-Control-Allow-Origin: * permits any origin to read the response,
+# which can expose sensitive data to attacker-controlled cross-origin scripts.
+# Restrict to an explicit allowlist of trusted origins.
+[[rules]]
+name     = "java_permissive_cors"
+pattern  = '"Access-Control-Allow-Origin"[^;]*"\*"'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "CORS Access-Control-Allow-Origin: * — allows any origin to read responses; restrict to an explicit origin allowlist"

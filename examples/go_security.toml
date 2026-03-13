@@ -1,0 +1,482 @@
+# Go Security and Correctness Rules
+#
+# Usage:
+#   cish-scanner --config examples/go_security.toml \
+#                --extensions go \
+#                ./
+#
+# Rules translated from the semgrep community Go ruleset
+# (github.com/semgrep/semgrep-rules/tree/develop/go).
+# Rules requiring inter-statement taint tracking, metavariable comparisons,
+# or multi-step data-flow (SQL injection, open-redirect via taint) are omitted.
+#
+# ── Scope notes ──────────────────────────────────────────────────────────────
+# scope = "**"    — matches everywhere including file scope (imports, globals)
+# scope = "**::*" — matches only inside named scopes (functions / methods)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Weak hash functions — MD5 / SHA-1 / SHA-224
+# CWE-327, CWE-328
+# Semgrep rules: use-of-md5, use-of-sha1, sha224-hash
+# ══════════════════════════════════════════════════════════════════════════════
+
+# md5.New() / md5.Sum() — collision-broken since 2004.
+# Use crypto/sha256 or crypto/sha512 for integrity; bcrypt/scrypt/Argon2 for passwords.
+[[rules]]
+name     = "go_weak_hash_md5"
+pattern  = '\bmd5\.(?:New|Sum)\s*\('
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "crypto/md5 — MD5 is collision-broken; use sha256.New() or sha512.New() for integrity, bcrypt/Argon2 for passwords"
+
+# sha1.New() / sha1.Sum() — collision-broken (SHAttered 2017).
+[[rules]]
+name     = "go_weak_hash_sha1"
+pattern  = '\bsha1\.(?:New|Sum)\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "crypto/sha1 — SHA-1 is collision-broken; use sha256 or sha512"
+
+# SHA-224 and SHA-512/224 are deprecated / disallowed in many security policies.
+[[rules]]
+name     = "go_weak_hash_sha224"
+pattern  = '\b(?:sha256\.(?:New224|Sum224)|sha3\.(?:New224|Sum224))\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "SHA-224 hash — deprecated in many security policies; use SHA-384 or SHA-512"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Weak / broken symmetric ciphers — DES, RC4
+# CWE-327
+# Semgrep rules: use-of-DES, use-of-rc4
+# ══════════════════════════════════════════════════════════════════════════════
+
+# DES (56-bit effective key) and 3DES (64-bit block, SWEET32 birthday attack).
+[[rules]]
+name     = "go_weak_cipher_des"
+pattern  = '\bdes\.(?:NewTripleDESCipher|NewCipher)\s*\('
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "crypto/des — DES/3DES is broken; use AES-GCM (crypto/aes + cipher.NewGCM)"
+
+# RC4 stream cipher has key-scheduling biases; broken in BEAST and RC4NOMORE attacks.
+[[rules]]
+name     = "go_weak_cipher_rc4"
+pattern  = '\brc4\.NewCipher\s*\('
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "crypto/rc4 — RC4 is broken; use AES-GCM"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Predictable RNG — math/rand
+# CWE-338 (Use of Cryptographically Weak PRNG)
+# Semgrep rule: math-random-used
+# ══════════════════════════════════════════════════════════════════════════════
+
+# math/rand is a deterministic PRNG — output is predictable from seed.
+# Flag the import so the entire file is reviewed; replace with crypto/rand.
+[[rules]]
+name     = "go_math_rand_import"
+pattern  = '"math/rand'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "math/rand — predictable PRNG; use crypto/rand for security-sensitive values (tokens, salts, nonces)"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TLS / SSL configuration
+# CWE-326, CWE-327
+# Semgrep rules: ssl-v3-is-insecure, tls-with-insecure-cipher, missing-ssl-minversion
+# ══════════════════════════════════════════════════════════════════════════════
+
+# SSLv3 is explicitly selected.  Removed from Go 1.14; must not be re-introduced.
+[[rules]]
+name     = "go_tls_sslv3"
+pattern  = '\btls\.VersionSSL30\b'
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "tls.VersionSSL30 — SSLv3 is insecure and removed since Go 1.14; use tls.VersionTLS13"
+
+# Weak cipher suites explicitly placed in a tls.Config.CipherSuites slice.
+[[rules]]
+name     = "go_tls_insecure_cipher"
+pattern  = '\btls\.(?:TLS_RSA_WITH_RC4_128_SHA|TLS_RSA_WITH_3DES_EDE_CBC_SHA|TLS_RSA_WITH_AES_128_CBC_SHA256|TLS_ECDHE_ECDSA_WITH_RC4_128_SHA|TLS_ECDHE_RSA_WITH_RC4_128_SHA|TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA|TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256|TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256)\b'
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "Insecure TLS cipher suite — RC4/3DES/CBC-SHA256 suites are weak; see tls.CipherSuites() for safe choices"
+
+# tls.Config literal — audit that MinVersion: tls.VersionTLS13 is present.
+# Without MinVersion the default is TLS 1.2 (Go 1.22+); older versions allowed TLS 1.0.
+[[rules]]
+name     = "go_tls_config"
+pattern  = '\btls\.Config\s*\{'
+scope    = "**"
+search   = "code"
+severity = "info"
+message  = "tls.Config — verify MinVersion: tls.VersionTLS13 is set; omitting it allows legacy TLS versions"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SSH insecure host-key verification
+# CWE-295 (Improper Certificate Validation)
+# Semgrep rule: avoid-ssh-insecure-ignore-host-key
+# ══════════════════════════════════════════════════════════════════════════════
+
+# InsecureIgnoreHostKey disables all server identity verification, enabling MITM.
+# Use ssh.FixedHostKey() or knownhosts.New() from golang.org/x/crypto/ssh/knownhosts.
+[[rules]]
+name     = "go_ssh_insecure_host_key"
+pattern  = '\bssh\.InsecureIgnoreHostKey\s*\(\s*\)'
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "ssh.InsecureIgnoreHostKey() — disables server verification; use knownhosts.New() for host key validation"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HTTP server without TLS
+# CWE-319 (Cleartext Transmission of Sensitive Information)
+# Semgrep rule: use-tls
+# ══════════════════════════════════════════════════════════════════════════════
+
+# http.ListenAndServe transmits all data in cleartext.
+# Use http.ListenAndServeTLS for any production endpoint handling sensitive data.
+[[rules]]
+name     = "go_http_no_tls"
+pattern  = '\bhttp\.ListenAndServe\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "http.ListenAndServe — cleartext HTTP; use http.ListenAndServeTLS for production endpoints"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Binding to all network interfaces
+# CWE-200 (Exposure of Sensitive Information)
+# Semgrep rule: avoid-bind-to-all-interfaces
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Listening on 0.0.0.0 or ":port" exposes the service on all interfaces
+# including external ones that may not be firewalled.
+[[rules]]
+name     = "go_bind_all_interfaces"
+pattern  = '\bnet\.Listen\s*\([^,]+,\s*"0\.0\.0\.0:|Listen\s*\([^,]+,\s*":'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "Listening on 0.0.0.0 or :port — binds all interfaces; specify a host address to limit exposure"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# gRPC insecure connection
+# CWE-300 (Channel Accessible by Non-Endpoint)
+# Semgrep rule: grpc-client-insecure-connection
+# ══════════════════════════════════════════════════════════════════════════════
+
+# grpc.WithInsecure() disables TLS entirely; channel is unencrypted and unauthenticated.
+# Replace with grpc.WithTransportCredentials(credentials.NewTLS(cfg)).
+[[rules]]
+name     = "go_grpc_insecure"
+pattern  = '\bgrpc\.WithInsecure\s*\(\s*\)'
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "grpc.WithInsecure() — disables TLS on gRPC channel; use grpc.WithTransportCredentials(credentials.NewTLS(cfg))"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Insecure CGI package
+# CVE-2015-5386 (httpoxy)
+# Semgrep rule: insecure-module-used (bad_imports)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# net/http/cgi is vulnerable to the httpoxy attack (CVE-2015-5386) where a
+# Proxy header from an HTTP request overwrites the HTTP_PROXY env variable.
+[[rules]]
+name     = "go_cgi_import"
+pattern  = '"net/http/cgi"'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "net/http/cgi — vulnerable to httpoxy (CVE-2015-5386); use net/http instead"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# pprof debug endpoint exposure
+# CWE-489 (Active Debug Code)
+# Semgrep rule: pprof-debug-exposure
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Importing net/http/pprof registers /debug/pprof on the default mux, leaking
+# heap dumps, goroutine stacks, CPU profiles, and command-line arguments.
+[[rules]]
+name     = "go_pprof_import"
+pattern  = '"net/http/pprof"'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "net/http/pprof — auto-exposes /debug/pprof heap/goroutine/CPU profiles; restrict behind authentication or remove from production"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# OS command execution
+# CWE-78 (OS Command Injection)
+# Semgrep rules: dangerous-exec-command, dangerous-exec-cmd, dangerous-syscall-exec
+# ══════════════════════════════════════════════════════════════════════════════
+
+# exec.Command / exec.CommandContext — flag for review; any variable first
+# argument derived from user input enables command injection.
+[[rules]]
+name     = "go_exec_command"
+pattern  = '\bexec\.Command(?:Context)?\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "exec.Command — verify the command and arguments contain no user-controlled data"
+
+# syscall.Exec / ForkExec / StartProcess directly replace / fork the process.
+[[rules]]
+name     = "go_syscall_exec"
+pattern  = '\bsyscall\.(?:Exec|ForkExec|StartProcess)\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "syscall.Exec/ForkExec/StartProcess — direct OS process execution; verify no user-controlled data in arguments"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Unsafe package
+# CWE-119 (Buffer Overflow), CWE-125 (Out-of-bounds Read)
+# Semgrep rule: use-of-unsafe-block
+# ══════════════════════════════════════════════════════════════════════════════
+
+# unsafe bypasses Go's type system and memory safety guarantees.
+# Any use may introduce buffer overflows or memory corruption exploitable by attackers.
+[[rules]]
+name     = "go_unsafe_usage"
+pattern  = '\bunsafe\.(?:Pointer|Sizeof|Alignof|Offsetof|Add|Slice|SliceData|String|StringData)\s*[(\[]'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "unsafe package — bypasses Go type safety; verify no attacker-controlled size or pointer arithmetic"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Unsafe reflection
+# CWE-470 (Unsafe Reflection)
+# Semgrep rule: unsafe-reflect-by-name
+# ══════════════════════════════════════════════════════════════════════════════
+
+# MethodByName / FieldByName with a runtime string enables unsafe reflection.
+# An attacker who controls the name can invoke unintended methods or read private fields.
+[[rules]]
+name     = "go_reflect_by_name"
+pattern  = '\.\b(?:MethodByName|FieldByName)\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "reflect.MethodByName/FieldByName — if name is user-controlled, attacker can invoke arbitrary methods or access private fields"
+
+# reflect.MakeFunc creates callable functions at runtime from arbitrary types.
+[[rules]]
+name     = "go_reflect_makefunc"
+pattern  = '\breflect\.MakeFunc\s*\('
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "reflect.MakeFunc — sidesteps type system; ensure user input cannot influence the generated function"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Cross-site scripting — text/template and unsafe template types
+# CWE-79 (XSS)
+# Semgrep rules: import-text-template, template-html-does-not-escape
+# ══════════════════════════════════════════════════════════════════════════════
+
+# text/template does NOT auto-escape HTML — all output goes raw to the browser.
+# Use html/template which performs context-aware escaping.
+[[rules]]
+name     = "go_text_template_import"
+pattern  = '"text/template"'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "text/template — no HTML escaping; use html/template for web output to prevent XSS"
+
+# template.HTML() / template.JS() / template.URL() etc. mark content as safe,
+# bypassing html/template's auto-escaping.  User-controlled data must never reach these.
+[[rules]]
+name     = "go_unsafe_template_type"
+pattern  = '\btemplate\.(?:HTML|CSS|HTMLAttr|JS|JSStr|Srcset|URL)\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "template.HTML/JS/URL() — bypasses html/template escaping; ensure no user-controlled data reaches this call"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# JWT — none algorithm / parse without verify
+# CWE-347 (Improper Verification of Cryptographic Signature)
+# Semgrep rules: jwt-go-none-algorithm, jwt-go-parse-unverified
+# ══════════════════════════════════════════════════════════════════════════════
+
+# jwt.SigningMethodNone disables signature verification — any token is accepted.
+[[rules]]
+name     = "go_jwt_none_alg"
+pattern  = '\bjwt\.SigningMethodNone\b'
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "jwt.SigningMethodNone — unsigned tokens accepted as valid; use HS256/RS256 with a secret/key"
+
+# ParseUnverified skips signature validation and should never be used on untrusted input.
+[[rules]]
+name     = "go_jwt_parse_unverified"
+pattern  = '\.ParseUnverified\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "jwt.ParseUnverified — skips signature validation; use jwt.Parse with a key function instead"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Cookie security flags
+# CWE-614, CWE-1004
+# Semgrep rules: cookie-missing-httponly, cookie-missing-secure,
+#                session-cookie-missing-httponly, session-cookie-missing-secure,
+#                session-cookie-samesitenone
+# ══════════════════════════════════════════════════════════════════════════════
+
+# HttpOnly: false — cookie readable from JavaScript, enabling XSS-based session theft.
+[[rules]]
+name     = "go_cookie_httponly_false"
+pattern  = 'HttpOnly\s*:\s*false'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "Cookie HttpOnly: false — cookie accessible to JavaScript; enables session theft via XSS"
+
+# Secure: false — cookie sent over plain HTTP, visible to network eavesdroppers.
+[[rules]]
+name     = "go_cookie_secure_false"
+pattern  = 'Secure\s*:\s*false'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "Cookie Secure: false — cookie transmitted over plain HTTP; enables interception"
+
+# SameSiteNoneMode without Secure is rejected by modern browsers and allows cross-site requests.
+[[rules]]
+name     = "go_cookie_samesite_none"
+pattern  = '\bhttp\.SameSiteNoneMode\b'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "SameSiteNoneMode — requires Secure flag and permits cross-site cookie sending; prefer SameSiteStrictMode or SameSiteLaxMode"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Decompression bomb
+# CWE-409 (Improper Handling of Highly Compressed Data)
+# Semgrep rule: potential-dos-via-decompression-bomb
+# ══════════════════════════════════════════════════════════════════════════════
+
+# io.Copy reads until EOF with no size limit.  A malicious compressed payload
+# that decompresses to gigabytes causes a denial-of-service.
+# Use io.CopyN(dst, src, maxBytes) to bound the decompressed output.
+[[rules]]
+name     = "go_decompression_bomb"
+pattern  = '\b(?:gzip|zlib|bzip2|flate|lzw)\.NewReader\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "Decompressor without size limit — use io.CopyN with a max-bytes cap to prevent decompression bomb DoS"
+
+# zip.OpenReader / zip.NewReader — flag zip archive processing for bomb review.
+[[rules]]
+name     = "go_zip_reader"
+pattern  = '\bzip\.(?:OpenReader|NewReader)\s*\('
+scope    = "**"
+search   = "code"
+severity = "info"
+message  = "zip.OpenReader/NewReader — verify: (1) total extracted bytes bounded with io.CopyN; (2) entry paths sanitised with filepath.Clean and checked against extraction root"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Temporary file creation in shared directory
+# CWE-377 (Insecure Temporary File), CWE-362 (TOCTOU Race)
+# Semgrep rule: bad-tmp-file-creation
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Hard-coded /tmp paths are vulnerable to TOCTOU races and symlink attacks.
+# Use os.CreateTemp("", prefix) which creates the file atomically with a unique name.
+[[rules]]
+name     = "go_tmp_hardcoded_path"
+pattern  = '"/tmp/'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "Hard-coded /tmp path — TOCTOU race / symlink attack; use os.CreateTemp or os.MkdirTemp for atomic safe creation"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Directory listing via http.FileServer
+# CWE-548 (Information Exposure Through Directory Listing)
+# Semgrep rule: fs-directory-listing
+# ══════════════════════════════════════════════════════════════════════════════
+
+# http.FileServer with no path restriction serves directory listings.
+# Wrap with http.StripPrefix and restrict the root to an approved sub-path;
+# or use a custom handler that disables index generation.
+[[rules]]
+name     = "go_http_file_server"
+pattern  = '\bhttp\.FileServer\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "http.FileServer — enables directory browsing; restrict root path and verify no sensitive files are accessible"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# otto JavaScript VM — code injection
+# CWE-94 (Code Injection)
+# Semgrep rule: dangerous-execution (otto)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# otto.VM.Run() executes arbitrary JavaScript.
+# Any user-controlled string reaching Run() is remote code execution.
+[[rules]]
+name     = "go_otto_vm_run"
+pattern  = '\botto\.New\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "otto JavaScript VM — VM.Run() executes arbitrary JS; ensure no user-controlled data reaches Run()"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# XXE — libxml2 external entity parsing
+# CWE-611 (XML External Entity Injection)
+# Semgrep rule: parsing-external-entities-enabled
+# ══════════════════════════════════════════════════════════════════════════════
+
+# parser.XMLParseNoEnt enables resolution of XML external entities,
+# allowing file disclosure or SSRF via entity expansion.
+[[rules]]
+name     = "go_libxml2_xxe"
+pattern  = '\bparser\.XMLParseNoEnt\b'
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "XMLParseNoEnt — enables XML external entity resolution; do not pass user data to this parser without entity expansion disabled"

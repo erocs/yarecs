@@ -1,0 +1,730 @@
+# C / C++ Security and Correctness Rules
+#
+# Usage:
+#   cish-scanner --config examples/c_cpp_security.toml \
+#                --extensions c,cpp,cc,cxx,h,hpp \
+#                src/
+#
+# Rules translated from the semgrep community C ruleset
+# (github.com/semgrep/semgrep-rules/tree/develop/c/lang).
+# Rules requiring AST type-inference or inter-statement data-flow
+# (double-free, use-after-free, char* equality, goto-fail) cannot be
+# expressed as regex and are omitted.
+#
+# ── Scope notes ──────────────────────────────────────────────────────────────
+# scope = "**"     — matches everywhere including file-scope (C has no classes)
+# scope = "**::*"  — matches only inside named scopes (functions / methods)
+# Most rules use "**" so that dangerous calls in static initialisers and
+# global helpers are not silently excluded.
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Integer conversion — atoi / atol / atoll family
+# CWE-190 (Integer Overflow), CWE-391 (Unchecked Error Condition)
+# Semgrep rule: incorrect-use-ato-fn
+# ══════════════════════════════════════════════════════════════════════════════
+
+# atoi/atol/atoll return 0 on error with no way to distinguish from a valid
+# zero, and invoke undefined behaviour on overflow.  The strtol/strtoll family
+# sets errno and signals overflow via LONG_MIN/LONG_MAX.
+[[rules]]
+name    = "c_atoi_family"
+pattern = '\batoi[lq]?\s*\(|\batol[l]?\s*\(|\batoll\s*\(|\batof\s*\('
+scope   = "**"
+search  = "code"
+severity = "warning"
+message = "atoi/atol/atoll — undefined behavior on overflow; use strtol/strtoll with errno checking"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Unbounded input — gets / scanf
+# CWE-120 (Buffer Copy without Checking Size of Input)
+# Semgrep rules: insecure-use-gets-fn, insecure-use-scanf-fn
+# ══════════════════════════════════════════════════════════════════════════════
+
+# gets() has no length parameter and was removed from C11.
+[[rules]]
+name    = "c_gets"
+pattern = '\bgets\s*\('
+scope   = "**"
+search  = "code"
+severity = "error"
+message = "gets() — no bounds checking; use fgets() or gets_s()"
+
+# scanf() without a width specifier on %s overflows the destination buffer.
+[[rules]]
+name    = "c_scanf"
+pattern = '\bscanf\s*\('
+scope   = "**"
+search  = "code"
+severity = "warning"
+message = "scanf() — unbounded %s reads overflow the buffer; use fgets() or add width specifiers"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# sscanf for numeric conversion
+# CWE-190 (Integer Overflow)
+# Semgrep rule: incorrect-use-sscanf-fn
+# ══════════════════════════════════════════════════════════════════════════════
+
+# sscanf silently overflows on out-of-range integers; strtol/strtod give errno.
+[[rules]]
+name    = "c_sscanf"
+pattern = '\bsscanf\s*\('
+scope   = "**"
+search  = "code"
+severity = "warning"
+message = "sscanf() — prefer strtol/strtod family for numeric conversion; sscanf overflows silently"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Unsafe string copy — strcpy / strncpy
+# CWE-676 (Use of Potentially Dangerous Function)
+# Semgrep rule: insecure-use-string-copy-fn
+# ══════════════════════════════════════════════════════════════════════════════
+
+# strcpy does not check destination size.  strncpy pads but does not
+# null-terminate when the source is longer than n.
+[[rules]]
+name    = "c_strcpy_strncpy"
+pattern = '\b(?:strcpy|strncpy)\s*\('
+scope   = "**"
+search  = "code"
+severity = "warning"
+message = "strcpy/strncpy — strcpy has no bounds check; strncpy may not null-terminate; use strcpy_s or strlcpy"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Unsafe string concatenation — strcat / strncat
+# CWE-676 (Use of Potentially Dangerous Function)
+# Semgrep rule: insecure-use-strcat-fn
+# ══════════════════════════════════════════════════════════════════════════════
+
+# strcat does not check destination capacity.  strncat is safer but the n
+# argument is often misused (total size vs. remaining space).
+[[rules]]
+name    = "c_strcat_strncat"
+pattern = '\b(?:strcat|strncat)\s*\('
+scope   = "**"
+search  = "code"
+severity = "warning"
+message = "strcat/strncat — can overflow destination buffer; use strcat_s or strlcat"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Format string — sprintf / vsprintf
+# CWE-134 (Externally-Controlled Format String)
+# Semgrep rule: insecure-use-printf-fn
+# ══════════════════════════════════════════════════════════════════════════════
+
+# sprintf writes to a fixed buffer with no length limit.  vsprintf has the
+# same problem.  Both allow format string injection if the format argument
+# is not a string literal.
+[[rules]]
+name    = "c_sprintf_vsprintf"
+pattern = '\b(?:sprintf|vsprintf)\s*\('
+scope   = "**"
+search  = "code"
+severity = "warning"
+message = "sprintf/vsprintf — no bounds checking; use snprintf/vsnprintf"
+
+# printf / fprintf with a non-literal format string can be exploited to read
+# or write memory (CWE-134).  Flag all calls for format-string review.
+[[rules]]
+name    = "c_printf_format"
+pattern = '\b(?:printf|fprintf|vprintf|vfprintf|dprintf)\s*\('
+scope   = "**"
+search  = "code"
+severity = "info"
+message = "printf family — verify format string is a compile-time literal, not user-controlled"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Non-reentrant tokeniser — strtok
+# CWE-676 (Use of Potentially Dangerous Function)
+# Semgrep rule: insecure-use-strtok-fn
+# ══════════════════════════════════════════════════════════════════════════════
+
+# strtok stores state in a static buffer: not thread-safe and breaks when
+# called from nested loops or signal handlers.
+[[rules]]
+name    = "c_strtok"
+pattern = '\bstrtok\s*\('
+scope   = "**"
+search  = "code"
+severity = "warning"
+message = "strtok() — not thread-safe; modifies the input buffer; use strtok_r() or strtok_s()"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Compiler-removable memset on sensitive data
+# CWE-14 (Compiler Removal of Code to Clear Buffers)
+# Semgrep rule: insecure-use-memset
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Optimising compilers may remove a memset() that writes to memory never read
+# again (e.g. clearing a stack buffer holding a password before return).
+# Use memset_s() (C11 Annex K) or SecureZeroMemory() / explicit_bzero().
+[[rules]]
+name    = "c_memset"
+pattern = '\bmemset\s*\('
+scope   = "**"
+search  = "code"
+severity = "info"
+message = "memset() — compiler may elide when clearing sensitive data; use memset_s() or SecureZeroMemory()"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /dev/urandom — missing error check on read()
+# CWE-252 (Unchecked Return Value), CWE-774 (FD Exhaustion)
+# Semgrep rule: random-fd-exhaustion
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Opening /dev/urandom or /dev/random and calling read() without checking the
+# return value can silently yield fewer bytes than requested, weakening entropy.
+# Prefer the getrandom(2) syscall which cannot be interrupted by EINTR.
+[[rules]]
+name    = "c_dev_urandom"
+pattern = '"/dev/(?:u)?random"'
+scope   = "**"
+search  = "code"
+severity = "warning"
+message = "Reading /dev/urandom — check read() return value for short reads; prefer getrandom()"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Weak / predictable RNG — rand / srand
+# CWE-338 (Use of Cryptographically Weak PRNG)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# rand() is a linear-congruential generator; its output is predictable and
+# must not be used for security tokens, salts, nonces, or key material.
+[[rules]]
+name    = "c_weak_rng"
+pattern = '\b(?:rand|srand)\s*\('
+scope   = "**"
+search  = "code"
+severity = "warning"
+message = "rand()/srand() — predictable LCG; use a CSPRNG (getrandom, /dev/urandom, BCryptGenRandom) for security-sensitive values"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Shell / process execution — system / popen
+# CWE-78 (OS Command Injection)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# system() and popen() pass their argument to the OS command interpreter.
+# Any unvalidated fragment enables full command injection.
+[[rules]]
+name    = "c_system_popen"
+pattern = '\b(?:system|popen|_popen)\s*\('
+scope   = "**"
+search  = "code"
+severity = "error"
+message = "system()/popen() — passes string to OS shell; validate and allowlist all arguments or replace with execv()"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Stack allocation — alloca
+# CWE-770 (Allocation without Limits), CWE-121 (Stack-based Buffer Overflow)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# alloca() allocates from the stack frame; a size derived from user input can
+# exhaust the stack or be exploited for stack-based overflow.  There is no
+# failure return — the process crashes or behaves unpredictably on overflow.
+[[rules]]
+name    = "c_alloca"
+pattern = '\balloca\s*\('
+scope   = "**"
+search  = "code"
+severity = "warning"
+message = "alloca() — stack allocation with no failure path; attacker-controlled size overflows the stack; use malloc/VLA with bounds check"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Insecure temp-file creation — tmpnam / tempnam / mktemp
+# CWE-377 (Insecure Temporary File), CWE-362 (TOCTOU Race)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# These functions return a filename that is checked, then created — a classic
+# TOCTOU race.  An attacker can create a symlink or file between the check and
+# the open.  Use mkstemp() / mkostemp() which open atomically.
+[[rules]]
+name    = "c_insecure_tmpfile"
+pattern = '\b(?:tmpnam|tempnam|mktemp)\s*\('
+scope   = "**"
+search  = "code"
+severity = "warning"
+message = "tmpnam/tempnam/mktemp — TOCTOU race between name generation and file creation; use mkstemp() instead"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Privilege manipulation — setuid / setgid / seteuid / setegid
+# CWE-250 (Execution with Unnecessary Privileges)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Calls that change the process UID/GID require review to confirm privileges
+# are dropped permanently (not just temporarily) and that the return value is
+# checked — a failed setuid() in a privileged process is a security defect.
+[[rules]]
+name    = "c_setuid_setgid"
+pattern = '\b(?:setuid|setgid|seteuid|setegid|setreuid|setregid)\s*\('
+scope   = "**"
+search  = "code"
+severity = "warning"
+message = "setuid/setgid — verify privileges are dropped permanently and the return value is checked"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Unsafe signal handler — signal()
+# CWE-479 (Signal Handler Use of a Non-reentrant Function)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# signal() is non-portable and its handler may call non-async-signal-safe
+# functions.  Use sigaction() with SA_RESTART; restrict handler body to
+# async-signal-safe operations (setting a volatile sig_atomic_t flag).
+[[rules]]
+name    = "c_signal"
+pattern = '\bsignal\s*\('
+scope   = "**"
+search  = "code"
+severity = "info"
+message = "signal() — non-portable; use sigaction(); restrict handler to async-signal-safe operations"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Non-local jump — setjmp / longjmp
+# CWE-474 (Use of Function with Inconsistent Implementations)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# longjmp() bypasses all stack unwinding: C++ destructors are not called,
+# RAII resources leak, and the program may enter an inconsistent state.
+# In C, resource cleanup (fclose, free) is skipped for any frame jumped over.
+[[rules]]
+name    = "c_longjmp"
+pattern = '\b(?:setjmp|longjmp|_setjmp|siglongjmp)\s*\('
+scope   = "**"
+search  = "code"
+severity = "warning"
+message = "setjmp/longjmp — bypasses C++ destructors and C cleanup; RAII resources leak across jumped frames"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Process execution — exec family
+# CWE-78 (OS Command Injection)
+# Flawfinder FF1009, risk 4
+# ══════════════════════════════════════════════════════════════════════════════
+
+# execl/execlp/execle/execv/execvp pass arguments directly to a new process
+# image without invoking a shell, but if any argument is user-controlled the
+# process can be hijacked.  Validate and allowlist all arguments; prefer
+# execvp with a pre-built argv[] over system() or popen().
+[[rules]]
+name    = "c_exec_family"
+pattern = '\b(?:execl|execlp|execle|execv|execvp|execvpe|_execl|_execlp|_execle|_execv|_execvp)\s*\('
+scope   = "**"
+search  = "code"
+severity = "warning"
+message = "exec() family — verify all arguments are validated and allowlisted; attacker-controlled path or argument enables arbitrary code execution"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Format string — syslog
+# CWE-134 (Externally-Controlled Format String)
+# Flawfinder FF1051, risk 4
+# ══════════════════════════════════════════════════════════════════════════════
+
+# syslog(priority, format, ...) passes the format string to printf-family
+# formatting.  If format is user-controlled it enables format string attacks
+# (stack read/write).  Always use a string literal for the format argument.
+[[rules]]
+name    = "c_syslog_format"
+pattern = '\bsyslog\s*\('
+scope   = "**"
+search  = "code"
+severity = "warning"
+message = "syslog() — verify format string is a compile-time literal, not user-controlled (CWE-134)"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Unbounded input — fscanf / vfscanf / vsscanf variants
+# CWE-120 (Buffer Copy without Checking Size of Input)
+# Flawfinder FF1008, risk 4
+# ══════════════════════════════════════════════════════════════════════════════
+
+# fscanf/vfscanf/vsscanf and their wide-character counterparts have the same
+# unbounded %s overflow risk as scanf().  Add a field-width specifier on every
+# %s/%S conversion, or replace with fgets() + manual parsing.
+[[rules]]
+name    = "c_fscanf_variants"
+pattern = '\b(?:fscanf|vfscanf|vsscanf|vscanf|fwscanf|vfwscanf|vswscanf|vwscanf)\s*\('
+scope   = "**"
+search  = "code"
+severity = "warning"
+message = "fscanf/vfscanf/vsscanf — unbounded %s reads overflow the buffer; add width specifiers or use fgets()"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Weak cipher — OpenSSL EVP legacy ciphers
+# CWE-327 (Use of Broken or Risky Cryptographic Algorithm)
+# Flawfinder FF1041–FF1048, risk 4
+# ══════════════════════════════════════════════════════════════════════════════
+
+# OpenSSL EVP functions for DES, DES-X, and short-key RC4/RC2 use broken
+# algorithms.  DES has a 56-bit key (exhaustively broken); RC4 has statistical
+# biases; RC2-40/64 and RC4-40 have trivially short keys.
+# Replace with EVP_aes_256_gcm() or EVP_chacha20_poly1305().
+[[rules]]
+name    = "c_openssl_weak_cipher"
+pattern = '\bEVP_(?:des_ecb|des_cbc|des_cfb|des_ofb|des_cfb1|des_cfb8|desx_cbc|rc4_40|rc2_40_cbc|rc2_64_cbc)\s*\('
+scope   = "**"
+search  = "code"
+severity = "error"
+message = "OpenSSL weak cipher (DES/RC4-40/RC2-40) — use EVP_aes_256_gcm() or EVP_chacha20_poly1305()"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Weak one-way hash — crypt / crypt_r
+# CWE-327 (Use of Broken or Risky Cryptographic Algorithm)
+# Flawfinder FF1049, risk 4
+# ══════════════════════════════════════════════════════════════════════════════
+
+# crypt() uses DES (default) or MD5 ($1$) — both broken for password storage.
+# The bcrypt ($2b$) and SHA-crypt ($5$/$6$) variants are acceptable only as
+# legacy compatibility; new code should use libsodium crypto_pwhash or argon2.
+[[rules]]
+name    = "c_crypt_weak_hash"
+pattern = '\bcrypt(?:_r)?\s*\('
+scope   = "**"
+search  = "code"
+severity = "warning"
+message = "crypt/crypt_r — default DES and MD5 variants are broken for password storage; use argon2 or libsodium crypto_pwhash"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TOCTOU race — access() / eaccess()
+# CWE-362 (Race Condition), CWE-367 (TOCTOU Race)
+# Flawfinder FF1006, risk 4
+# ══════════════════════════════════════════════════════════════════════════════
+
+# access() checks file permissions using real UID/GID; between the check and
+# the subsequent open() an attacker can replace the file with a symlink.
+# Also, access() does not check effective UID, making it wrong for setuid
+# programs.  Use open() with O_NOFOLLOW and check errno directly.
+[[rules]]
+name    = "c_access_toctou"
+pattern = '\b(?:access|eaccess|faccessat)\s*\('
+scope   = "**"
+search  = "code"
+severity = "warning"
+message = "access() — TOCTOU race between check and use; use open(O_NOFOLLOW) and check errno instead"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TOCTOU race — readlink
+# CWE-362, CWE-20
+# Flawfinder FF1007, risk 5
+# ══════════════════════════════════════════════════════════════════════════════
+
+# readlink() does not NUL-terminate its output buffer.  The caller must add the
+# terminator manually (buf[ret] = '\0').  Also susceptible to TOCTOU if the
+# resolved path is then opened separately.
+[[rules]]
+name    = "c_readlink"
+pattern = '\breadlink(?:at)?\s*\('
+scope   = "**"
+search  = "code"
+severity = "warning"
+message = "readlink — does not NUL-terminate output; add buf[ret]='\\0'; also TOCTOU-prone if path is opened afterwards"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TOCTOU race — chown / chgrp / chmod (path-based variants)
+# CWE-362 (Race Condition)
+# Flawfinder FF1005, risk 5
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Path-based chown/chmod are vulnerable to symlink substitution between the
+# path resolution and the permission change.  Prefer the fd-based variants
+# fchown(fd, …) and fchmod(fd, …) which operate on an already-open file.
+[[rules]]
+name    = "c_chown_chmod_toctou"
+pattern = '\b(?:chown|lchown|chgrp|chmod|lchmod)\s*\('
+scope   = "**"
+search  = "code"
+severity = "warning"
+message = "chown/chmod (path-based) — TOCTOU race; use fchown(fd,…)/fchmod(fd,…) on an open file descriptor"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Attacker-controlled environment — getenv
+# CWE-807 (Reliance on Untrusted Inputs in a Security Decision)
+# Flawfinder FF1010, risk 3
+# ══════════════════════════════════════════════════════════════════════════════
+
+# getenv() returns an attacker-controlled string (environment variables can be
+# set by the caller of any setuid/setgid or sudo-invoked program).  Never use
+# the result in a security decision without validation; prefer explicit CLI args.
+[[rules]]
+name    = "c_getenv"
+pattern = '\bgetenv\s*\('
+scope   = "**"
+search  = "code"
+severity = "info"
+message = "getenv() — environment variables are caller-controlled in privileged processes; validate before use in security decisions"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DLL hijacking — LoadLibrary / LoadLibraryEx
+# CWE-829 (Inclusion of Functionality from Untrusted Control Sphere)
+# Flawfinder FF1030, risk 3
+# ══════════════════════════════════════════════════════════════════════════════
+
+# LoadLibrary with a bare filename searches the current directory first on
+# older Windows versions (DLL planting / hijacking).  Use an absolute path or
+# the LOAD_LIBRARY_SEARCH_SYSTEM32 flag with LoadLibraryEx.
+[[rules]]
+name    = "c_load_library"
+pattern = '\bLoadLibrary(?:Ex)?[AW]?\s*\('
+scope   = "**"
+search  = "code"
+severity = "warning"
+message = "LoadLibrary — relative paths enable DLL hijacking; use an absolute path or LOAD_LIBRARY_SEARCH_SYSTEM32 with LoadLibraryEx"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Windows process creation — CreateProcess family
+# CWE-78 (OS Command Injection)
+# Flawfinder FF1031, risk 3
+# ══════════════════════════════════════════════════════════════════════════════
+
+# CreateProcess passes lpCommandLine to cmd.exe-style parsing which can be
+# manipulated via argument injection.  Validate all arguments; pass the
+# executable path in lpApplicationName and the sanitised argument string in
+# lpCommandLine separately.
+[[rules]]
+name    = "c_create_process"
+pattern = '\bCreateProcess(?:AsUser|WithLogon|WithToken)?[AW]?\s*\('
+scope   = "**"
+search  = "code"
+severity = "warning"
+message = "CreateProcess — argument injection possible via lpCommandLine; validate all arguments and use lpApplicationName for the executable"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Unreliable identity — getlogin / cuserid
+# CWE-807 (Reliance on Untrusted Inputs in a Security Decision)
+# Flawfinder FF1052, risk 4
+# ══════════════════════════════════════════════════════════════════════════════
+
+# getlogin() reads from utmp which can be spoofed; cuserid() is obsolete and
+# unreliable.  Use getpwuid(geteuid()) to get the effective user name, or
+# getpwuid(getuid()) for the real user.
+[[rules]]
+name    = "c_getlogin_cuserid"
+pattern = '\b(?:getlogin(?:_r)?|cuserid)\s*\('
+scope   = "**"
+search  = "code"
+severity = "warning"
+message = "getlogin/cuserid — unreliable identity; spoofable via utmp; use getpwuid(geteuid()) instead"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Obsolete auth functions — getpass / getpw
+# CWE-676 (Use of Potentially Dangerous Function), CWE-120
+# Flawfinder FF1053, risk 4
+# ══════════════════════════════════════════════════════════════════════════════
+
+# getpass() uses a fixed-length static buffer (may be as small as 8 bytes)
+# and is not in POSIX.  getpw() is obsolete and has a fixed buffer.
+# Use libsodium's sodium_mlock'd buffer or a dedicated password-input library.
+[[rules]]
+name    = "c_getpass_getpw"
+pattern = '\b(?:getpass|getpw)\s*\('
+scope   = "**"
+search  = "code"
+severity = "warning"
+message = "getpass/getpw — obsolete fixed-size buffers; use a dedicated secure-input function with explicit zeroing"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Windows privilege — RpcImpersonateClient / ImpersonateXxx
+# CWE-250 (Execution with Unnecessary Privileges)
+# Flawfinder FF1060–FF1067, risk 4
+# ══════════════════════════════════════════════════════════════════════════════
+
+# If RpcImpersonateClient or any Impersonate* call fails and the error is not
+# checked, the thread continues running under its original (elevated) identity.
+# Always check the return value and abort the operation on failure.
+[[rules]]
+name    = "c_windows_impersonate"
+pattern = '\b(?:RpcImpersonateClient|ImpersonateLoggedOnUser|ImpersonateNamedPipeClient|ImpersonateSelf|ImpersonateAnonymousToken|RevertToSelf|SetThreadToken|DdeImpersonateClient)\s*\('
+scope   = "**"
+search  = "code"
+severity = "warning"
+message = "Impersonate* / RpcImpersonateClient — check return value; failure leaves thread running under original (elevated) identity"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# NULL DACL — SetSecurityDescriptorDacl
+# CWE-732 (Incorrect Permission Assignment for Critical Resource)
+# Flawfinder FF1068, risk 5
+# ══════════════════════════════════════════════════════════════════════════════
+
+# SetSecurityDescriptorDacl(sd, TRUE, NULL, FALSE) installs a NULL DACL,
+# granting Everyone (including anonymous) full control of the object.
+# Always pass an explicit DACL that grants only the minimum required permissions.
+[[rules]]
+name    = "c_null_dacl"
+pattern = '\bSetSecurityDescriptorDacl\s*\('
+scope   = "**"
+search  = "code"
+severity = "error"
+message = "SetSecurityDescriptorDacl — passing a NULL DACL grants Everyone full access; always supply an explicit minimum-privilege DACL"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Buffer overflow risk — realpath / getwd
+# CWE-120 (Buffer Copy without Checking Size of Input)
+# Flawfinder FF1011, risk 3
+# ══════════════════════════════════════════════════════════════════════════════
+
+# realpath(path, resolved) writes up to PATH_MAX bytes into resolved; if
+# resolved is smaller than PATH_MAX the buffer overflows.  Pass NULL as the
+# second argument so realpath() allocates its own buffer (POSIX.1-2008) and
+# free() it when done.  getwd() is obsolete — use getcwd(buf, size) instead.
+[[rules]]
+name    = "c_realpath_getwd"
+pattern = '\b(?:realpath|getwd)\s*\('
+scope   = "**"
+search  = "code"
+severity = "warning"
+message = "realpath/getwd — pass NULL as output buffer (realpath) or use getcwd(buf,size); fixed-size buffers may overflow on long paths"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Weak / predictable RNG — extended family
+# CWE-338 (Use of Cryptographically Weak PRNG)
+# Flawfinder FF1050, risk 3
+# ══════════════════════════════════════════════════════════════════════════════
+
+# The drand48/lrand48/mrand48 family and random() are all LCG-based or
+# similar weak PRNGs whose internal state can be reconstructed after observing
+# a few outputs.  Use getrandom(2), /dev/urandom, or BCryptGenRandom for
+# any security-sensitive value.
+[[rules]]
+name    = "c_weak_rng_extended"
+pattern = '\b(?:random|drand48|lrand48|mrand48|nrand48|erand48|jrand48|lcong48|srandom|srand48|seed48|g_random_int|g_random_double|g_rand_new)\s*\('
+scope   = "**"
+search  = "code"
+severity = "warning"
+message = "Weak PRNG (random/drand48 family) — predictable; use getrandom(), /dev/urandom, or BCryptGenRandom for security-sensitive values"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TOCTOU temp file — GetTempFileName (Windows)
+# CWE-377 (Insecure Temporary File), CWE-362 (TOCTOU Race)
+# Flawfinder FF1035, risk 3
+# ══════════════════════════════════════════════════════════════════════════════
+
+# GetTempFileName generates a name then creates a zero-byte file; the caller
+# must delete and re-create it, introducing a TOCTOU window.  Use
+# CreateFile with CREATE_NEW and a GUID-based name, or the safer
+# GetTempFileName-then-immediate-open pattern with exclusive access.
+[[rules]]
+name    = "c_get_temp_filename"
+pattern = '\bGetTempFileName[AW]?\s*\('
+scope   = "**"
+search  = "code"
+severity = "warning"
+message = "GetTempFileName — TOCTOU race between name generation and file creation; use CreateFile with a GUID name and CREATE_NEW | SECURITY_SQOS_PRESENT"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Memory copy — memcpy / memmove / CopyMemory / bcopy
+# CWE-120 (Buffer Copy without Checking Size of Input)
+# Flawfinder FF1020, risk 2
+# ══════════════════════════════════════════════════════════════════════════════
+
+# memcpy/memmove do not check whether the destination is large enough for
+# the requested byte count.  Verify that count <= sizeof(dest) and that
+# source and destination do not overlap unexpectedly.
+[[rules]]
+name    = "c_memcpy_family"
+pattern = '\b(?:memcpy|memmove|CopyMemory|RtlCopyMemory|bcopy)\s*\('
+scope   = "**"
+search  = "code"
+severity = "info"
+message = "memcpy/memmove — verify count <= sizeof(dest); no bounds checking performed"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Format string — snprintf / vsnprintf
+# CWE-134 (Externally-Controlled Format String)
+# Flawfinder FF1057, risk 4
+# ══════════════════════════════════════════════════════════════════════════════
+
+# snprintf/vsnprintf and wide-character variants are bounds-checked for length
+# but still vulnerable to format string injection if the format argument is
+# user-controlled.  Always use a string literal as the format argument.
+[[rules]]
+name    = "c_snprintf_format"
+pattern = '\b(?:snprintf|vsnprintf|swprintf|vswprintf|_snprintf|_vsnprintf|_snwprintf|_vsnwprintf)\s*\('
+scope   = "**"
+search  = "code"
+severity = "info"
+message = "snprintf/vsnprintf — verify format string is a compile-time literal, not user-controlled (CWE-134)"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Insecure temp file — tmpfile
+# CWE-377 (Insecure Temporary File)
+# Flawfinder FF1036, risk 2
+# ══════════════════════════════════════════════════════════════════════════════
+
+# tmpfile() creates a temporary file in an implementation-defined directory
+# (often /tmp); on some systems the path can be predicted before the file is
+# opened.  Use mkstemp() on POSIX or the safer tempfile::NamedTempFile.
+[[rules]]
+name    = "c_tmpfile"
+pattern = '\btmpfile\s*\('
+scope   = "**"
+search  = "code"
+severity = "info"
+message = "tmpfile() — implementation-defined temp directory; prefer mkstemp() for atomic, unique file creation"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# vfork — TOCTOU and async-signal-safety risk
+# CWE-362 (Race Condition)
+# Flawfinder FF1037, risk 2
+# ══════════════════════════════════════════════════════════════════════════════
+
+# vfork() shares the parent's address space with the child; the child must
+# call exec() or _exit() immediately.  Any other operation (including calling
+# library functions) corrupts the parent's state.  Use posix_spawn() or
+# fork() + exec() instead.
+[[rules]]
+name    = "c_vfork"
+pattern = '\bvfork\s*\('
+scope   = "**"
+search  = "code"
+severity = "warning"
+message = "vfork() — shares parent address space; child must call exec()/_exit() immediately; use posix_spawn() instead"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Wide-character unsafe string functions
+# CWE-120 / CWE-676 (Dangerous Function)
+# Flawfinder FF1022–FF1028, risk 4
+# ══════════════════════════════════════════════════════════════════════════════
+
+# wcscat/wcscpy and their Windows variants (lstrcpy, StrCat, etc.) have the
+# same overflow and truncation risks as their narrow-character counterparts.
+[[rules]]
+name    = "c_wide_str_unsafe"
+pattern = '\b(?:wcscat|wcsncat|wcscpy|wcsncpy|lstrcpy|lstrcpyn|lstrcat|lstrcatn|StrCat|StrCatBuff|StrCpy|StrCpyN|StrNCat|StrNCpy)\s*\('
+scope   = "**"
+search  = "code"
+severity = "warning"
+message = "Wide/Windows string copy/concat — no bounds check or may not NUL-terminate; use wcsncat_s/wcsncpy_s or StringCchCopy"

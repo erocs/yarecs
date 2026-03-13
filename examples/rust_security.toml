@@ -1,0 +1,170 @@
+# Rust Security Rules
+#
+# Usage:
+#   cish-scanner --config examples/rust_security.toml \
+#                --extensions rs \
+#                src/
+#
+# Rules translated from the semgrep community Rust ruleset
+# (github.com/semgrep/semgrep-rules/tree/develop/rust/lang/security).
+# All 10 upstream rules are covered; only reqwest-set-sensitive requires a
+# chain (anywhere_in_method + negate) to reduce false positives.
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Cryptographically weak hash functions
+# CWE-328 (Use of Weak Hash)
+# Semgrep rule: insecure-hashes
+# ══════════════════════════════════════════════════════════════════════════════
+
+# md2, md4, md5, and sha1 are broken — use sha2::Sha256 / sha3::Sha3_256 or
+# higher, or a password hash (argon2, bcrypt, scrypt) for credential storage.
+[[rules]]
+name     = "rust_insecure_hash"
+pattern  = '\b(?:(?:md2::)?Md2|(?:md4::)?Md4|(?:md5::)?Md5|(?:sha1::)?Sha1)::new\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "Insecure hash function (MD2/MD4/MD5/SHA-1) — use sha2::Sha256 or sha3::Sha3_256 for integrity; argon2/bcrypt for passwords"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# unsafe block usage
+# CWE-242 (Use of Inherently Dangerous Function)
+# Semgrep rule: unsafe-usage
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Every unsafe block bypasses Rust's memory safety guarantees.  Raw pointer
+# dereferences, transmutes, and FFI calls inside unsafe blocks are common
+# sources of buffer overflows, use-after-free, and data races.
+[[rules]]
+name     = "rust_unsafe_block"
+pattern  = '\bunsafe\s*\{'
+scope    = "**"
+search   = "code"
+severity = "info"
+message  = "unsafe block — audited for raw pointer safety, valid transmutes, and absence of data races?"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Process identity — args / args_os / current_exe unreliable for security
+# Semgrep rules: args, args-os, current-exe
+# ══════════════════════════════════════════════════════════════════════════════
+
+# std::env::args() / args_os() include argv[0] which the calling process can
+# set to any arbitrary string — it must not be used to make trust decisions.
+[[rules]]
+name     = "rust_env_args"
+pattern  = '\b(?:std::)?env::args(?:_os)?\s*\(\s*\)'
+scope    = "**"
+search   = "code"
+severity = "info"
+message  = "std::env::args/args_os — argv[0] is caller-controlled and must not be trusted for security decisions"
+
+# current_exe() resolves via /proc/self/exe on Linux; the path can be replaced
+# between the call and any subsequent use (TOCTOU).  Do not use for trust checks.
+[[rules]]
+name     = "rust_current_exe"
+pattern  = '\b(?:std::)?env::current_exe\s*\(\s*\)'
+scope    = "**"
+search   = "code"
+severity = "info"
+message  = "std::env::current_exe — path is advisory only; do not use for security checks (TOCTOU, symlink races)"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# reqwest — TLS certificate / hostname validation disabled
+# CWE-295 (Improper Certificate Validation)
+# Semgrep rule: reqwest-accept-invalid
+# ══════════════════════════════════════════════════════════════════════════════
+
+# danger_accept_invalid_certs(true) and danger_accept_invalid_hostnames(true)
+# disable TLS verification entirely, making every HTTPS connection vulnerable
+# to man-in-the-middle attacks.  Remove these calls in production code.
+[[rules]]
+name     = "rust_reqwest_accept_invalid_tls"
+pattern  = '\.danger_accept_invalid_(?:certs|hostnames)\s*\(\s*true\s*\)'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "reqwest danger_accept_invalid_certs/hostnames(true) — disables TLS verification; enables MITM attacks"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# reqwest — Authorization header without set_sensitive
+# Semgrep rule: reqwest-set-sensitive
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Calling HeaderMap::insert with an Authorization (or similar security) header
+# without marking the HeaderValue as sensitive means the value will appear in
+# debug logs and tracing output.  Call header_value.set_sensitive(true) before
+# inserting it into the map.
+#
+# Note: the anywhere_in_method chain searches the enclosing function body.
+# Code at file/global scope falls back to the whole file; if any call-site in
+# the file already uses set_sensitive the rule is suppressed.  This is only
+# observable in synthetic test snippets; real Rust code is function-scoped.
+[[rules]]
+name     = "rust_reqwest_auth_not_sensitive"
+pattern  = '\.insert\s*\(\s*(?:header::AUTHORIZATION|"Authorization"|"authorization")'
+scope    = "**"
+search   = "code"
+severity = "info"
+message  = "Authorization header inserted without set_sensitive(true) — value may appear in debug logs; call header_value.set_sensitive(true) first"
+chain    = [
+    { pattern = "set_sensitive", relationship = "anywhere_in_method", negate = true },
+]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# rustls — dangerous client configuration
+# CWE-295 (Improper Certificate Validation)
+# Semgrep rule: rustls-dangerous
+# ══════════════════════════════════════════════════════════════════════════════
+
+# DangerousClientConfig and set_certificate_verifier allow replacing the
+# standard TLS certificate chain validation with a custom (or no-op) verifier.
+# Any use must be carefully audited; misconfigured verifiers enable MITM attacks.
+[[rules]]
+name     = "rust_rustls_dangerous"
+pattern  = '\brustls::client::DangerousClientConfig\b|\.dangerous\s*\(\s*\)\.set_certificate_verifier\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "rustls DangerousClientConfig / set_certificate_verifier — custom certificate verifier bypasses standard TLS validation; audit carefully"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# openssl — SSL_VERIFY_NONE disables peer certificate validation
+# CWE-295
+# Semgrep rule: ssl-verify-none
+# ══════════════════════════════════════════════════════════════════════════════
+
+# set_verify(SSL_VERIFY_NONE) disables peer certificate verification on an
+# OpenSSL context, allowing connections to servers with any certificate.
+[[rules]]
+name     = "rust_ssl_verify_none"
+pattern  = '\bSSL_VERIFY_NONE\b'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "SSL_VERIFY_NONE — disables peer certificate verification; use SslVerifyMode::PEER to prevent MITM attacks"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Insecure temporary directory
+# CWE-377 (Insecure Temporary File), CWE-362 (TOCTOU Race)
+# Semgrep rule: temp-dir
+# ══════════════════════════════════════════════════════════════════════════════
+
+# std::env::temp_dir() returns a world-writable shared directory.  Creating
+# files with predictable names there is vulnerable to symlink and TOCTOU
+# attacks.  Use tempfile::NamedTempFile or tempfile::tempdir() instead, which
+# create uniquely-named files atomically.
+[[rules]]
+name     = "rust_temp_dir"
+pattern  = '\b(?:std::)?env::temp_dir\s*\(\s*\)'
+scope    = "**"
+search   = "code"
+severity = "info"
+message  = "std::env::temp_dir — shared world-writable directory; use tempfile::NamedTempFile or tempfile::tempdir() for secure temp file creation"
