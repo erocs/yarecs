@@ -322,16 +322,3 @@ severity    = "warning"
 message     = "OpenLevel called"
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# TODO / FIXME / HACK in security-sensitive areas
-# ══════════════════════════════════════════════════════════════════════════════
-
-# Finds deferred-work markers inside functions that handle RPCs or file paths,
-# which may indicate incomplete security hardening.
-[[rules]]
-name        = "ue5_security_todo_in_rpc_impl"
-pattern     = '\b(?:TODO|FIXME|HACK|SECURITY)\b'
-scope       = "**::*"
-search      = "comments"
-severity    = "warning"
-message     = "Deferred-work marker in method"
