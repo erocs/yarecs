@@ -728,3 +728,38 @@ scope   = "**"
 search  = "code"
 severity = "warning"
 message = "Wide/Windows string copy/concat — no bounds check or may not NUL-terminate; use wcsncat_s/wcsncpy_s or StringCchCopy"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Shell execution — ShellExecute / ShellExecuteEx
+# CWE-78 (OS Command Injection), CWE-829 (Inclusion from Untrusted Source)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ShellExecute* opens or runs a file through the Windows shell association
+# table.  An attacker-controlled path or verb can execute arbitrary programs
+# or open malicious URIs (file://, javascript:, steam://, etc.).
+# Replace with CreateProcess using an explicit, validated executable path.
+[[rules]]
+name    = "c_shell_execute"
+pattern = '\bShellExecute(?:Ex)?[AW]?\s*\('
+scope   = "**"
+search  = "code"
+severity = "error"
+message = "ShellExecute/ShellExecuteEx — attacker-controlled path or verb enables arbitrary execution; use CreateProcess with an explicit validated path"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Legacy process creation — WinExec
+# CWE-78 (OS Command Injection)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# WinExec is a legacy Win32 API superseded by CreateProcess.  Its single
+# command-string argument is parsed by the shell and is trivially injectable.
+# Replace with CreateProcess, passing the executable in lpApplicationName.
+[[rules]]
+name    = "c_win_exec"
+pattern = '\bWinExec\s*\('
+scope   = "**"
+search  = "code"
+severity = "error"
+message = "WinExec — legacy API with injectable command string; use CreateProcess with lpApplicationName instead"

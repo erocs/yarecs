@@ -157,69 +157,6 @@ severity    = "warning"
 message     = "ServerTravel called"
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Unsafe C string / memory functions
-# ══════════════════════════════════════════════════════════════════════════════
-
-# strcpy, strcat, sprintf, gets, and friends have no bounds checking.
-# UE5 provides safe alternatives: FCString::Strcpy / Strcat / Sprintf,
-# FString::Printf, or the bounded C11 variants (strncpy_s, snprintf).
-[[rules]]
-name        = "ue5_unsafe_string_fn"
-pattern     = '\b(?:strcpy|strcat|sprintf|gets|vsprintf|wcscpy|wcscat|wsprintf)\s*\('
-scope       = "**::*"
-search      = "code"
-severity    = "error"
-message     = "Unsafe C string function"
-
-# memcpy and memmove are safe when both the size and source are controlled,
-# but deserve a review comment whenever the size argument is derived from
-# network input.  UE5 wrapper: FMemory::Memcpy.
-[[rules]]
-name        = "ue5_raw_memcpy"
-pattern     = '\b(?:memcpy|memmove)\s*\('
-scope       = "**::*"
-search      = "code"
-severity    = "warning"
-message     = "Raw memcpy/memmove"
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Shell / process execution
-# ══════════════════════════════════════════════════════════════════════════════
-
-# ShellExecute* opens or runs a file through the Windows shell association
-# table.  An attacker-controlled path or verb can execute arbitrary programs
-# or open malicious URIs.
-[[rules]]
-name        = "ue5_shell_execute"
-pattern     = '\bShellExecute(?:Ex)?[AW]?\s*\('
-scope       = "**::*"
-search      = "code"
-severity    = "error"
-message     = "ShellExecute / ShellExecuteEx"
-
-# WinExec is a legacy Win32 API superseded by CreateProcess.  Its single
-# command-string argument is trivially injectable.
-[[rules]]
-name        = "ue5_win_exec"
-pattern     = '\bWinExec\s*\('
-scope       = "**::*"
-search      = "code"
-severity    = "error"
-message     = "WinExec"
-
-# system() and popen() pass their argument directly to the OS command
-# interpreter (cmd.exe / sh).  Any unvalidated fragment enables full
-# command injection.
-[[rules]]
-name        = "ue5_system_popen"
-pattern     = '\b(?:system|popen|_popen)\s*\('
-scope       = "**::*"
-search      = "code"
-severity    = "error"
-message     = "system() / popen()"
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Direct socket I/O — bypass of UE5 networking stack
@@ -248,21 +185,6 @@ search      = "code"
 severity    = "error"
 message     = "Direct POSIX socket call"
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Weak / predictable RNG
-# ══════════════════════════════════════════════════════════════════════════════
-
-# rand() is a linear-congruential generator seeded with srand(); its output
-# is predictable.  For gameplay randomness use FMath::RandRange; for anything
-# security-sensitive (tokens, salts, IDs) use a platform CSPRNG.
-[[rules]]
-name        = "ue5_weak_rng"
-pattern     = '\b(?:rand|srand)\s*\('
-scope       = "**::*"
-search      = "code"
-severity    = "warning"
-message     = "rand() / srand() — predictable RNG"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
