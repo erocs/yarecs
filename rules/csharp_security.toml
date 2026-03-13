@@ -1,7 +1,7 @@
 # C# / .NET Security Rules
 #
 # Usage:
-#   cish-scanner --config examples/csharp_security.toml \
+#   yarecs --config rules/csharp_security.toml \
 #                --extensions cs \
 #                src/
 #

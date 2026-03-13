@@ -1,7 +1,7 @@
 # Java Security and Correctness Rules
 #
 # Usage:
-#   cish-scanner --config examples/java_security.toml \
+#   yarecs --config rules/java_security.toml \
 #                --extensions java \
 #                src/
 #

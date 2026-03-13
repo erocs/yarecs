@@ -1,7 +1,7 @@
 # Go Security and Correctness Rules
 #
 # Usage:
-#   cish-scanner --config examples/go_security.toml \
+#   yarecs --config rules/go_security.toml \
 #                --extensions go \
 #                ./
 #

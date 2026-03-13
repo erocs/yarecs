@@ -1,7 +1,7 @@
 # Kotlin Security Rules
 #
 # Usage:
-#   cish-scanner --config examples/kotlin_security.toml \
+#   yarecs --config rules/kotlin_security.toml \
 #                --extensions kt,kts \
 #                src/
 #

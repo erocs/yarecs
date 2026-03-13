@@ -1,7 +1,7 @@
 # Rust Security Rules
 #
 # Usage:
-#   cish-scanner --config examples/rust_security.toml \
+#   yarecs --config rules/rust_security.toml \
 #                --extensions rs \
 #                src/
 #

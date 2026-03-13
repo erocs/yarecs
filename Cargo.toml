@@ -1,10 +1,10 @@
 [package]
-name = "cish-scanner"
-version = "0.1.0"
+name = "yarecs"
+version = "0.2.0"
 edition = "2021"
 
 [[bin]]
-name = "cish-scanner"
+name = "yarecs"
 path = "src/main.rs"
 
 [dependencies]

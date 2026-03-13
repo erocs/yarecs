@@ -1,7 +1,7 @@
 # Unreal Engine 5 — Security-focused scan rules
 #
 # Usage:
-#   cish-scanner --config examples/unreal_engine5.toml \
+#   yarecs --config rules/unreal_engine5.toml \
 #                --extensions h,cpp \
 #                Source/
 #

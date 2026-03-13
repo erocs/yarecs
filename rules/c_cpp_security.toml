@@ -1,7 +1,7 @@
 # C / C++ Security and Correctness Rules
 #
 # Usage:
-#   cish-scanner --config examples/c_cpp_security.toml \
+#   yarecs --config rules/c_cpp_security.toml \
 #                --extensions c,cpp,cc,cxx,h,hpp \
 #                src/
 #
