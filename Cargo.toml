@@ -7,6 +7,10 @@ edition = "2021"
 name = "yarecs"
 path = "src/main.rs"
 
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
+toml  = "0.8"
+
 [dependencies]
 # Ripgrep's grep crate - top-level entrypoint to grep-regex, grep-matcher, grep-searcher
 grep = "0.3"

@@ -187,7 +187,7 @@ message = "memset() — compiler may elide when clearing sensitive data; use mem
 name    = "c_dev_urandom"
 pattern = '"/dev/(?:u)?random"'
 scope   = "**"
-search  = "code"
+search  = "all"
 severity = "warning"
 message = "Reading /dev/urandom — check read() return value for short reads; prefer getrandom()"
 

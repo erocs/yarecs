@@ -1,0 +1,260 @@
+# Test fixtures for rules/c_cpp_security.toml
+# One [[case]] per rule: hit must fire the rule, miss must NOT fire that rule.
+
+rules_file = "rules/c_cpp_security.toml"
+ext        = "c"
+
+[[case]]
+rule = "c_atoi_family"
+hit  = 'int n = atoi(argv[1]);'
+miss = 'long n = strtol(argv[1], &end, 10);'
+
+[[case]]
+rule = "c_gets"
+hit  = 'gets(buf);'
+miss = 'fgets(buf, sizeof(buf), stdin);'
+
+[[case]]
+rule = "c_scanf"
+hit  = 'scanf("%s", buf);'
+miss = 'fgets(buf, 100, stdin);'
+
+[[case]]
+rule = "c_sscanf"
+hit  = 'sscanf(input, "%d", &n);'
+miss = 'n = strtol(input, &end, 10);'
+
+[[case]]
+rule = "c_strcpy_strncpy"
+hit  = 'strcpy(dst, src);'
+miss = 'strlcpy(dst, src, sizeof(dst));'
+
+[[case]]
+rule = "c_strcat_strncat"
+hit  = 'strcat(buf, suffix);'
+miss = 'strlcat(buf, suffix, sizeof(buf));'
+
+[[case]]
+rule = "c_sprintf_vsprintf"
+hit  = 'sprintf(buf, "%s", msg);'
+miss = 'snprintf(buf, sizeof(buf), "%s", msg);'
+
+[[case]]
+rule = "c_printf_format"
+hit  = 'printf(user_str);'
+miss = 'puts(user_str);'
+
+[[case]]
+rule = "c_strtok"
+hit  = 'strtok(line, ",");'
+miss = 'strtok_r(line, ",", &save);'
+
+[[case]]
+rule = "c_memset"
+hit  = 'memset(buf, 0, sizeof(buf));'
+miss = 'explicit_bzero(buf, sizeof(buf));'
+
+[[case]]
+rule = "c_dev_urandom"
+hit  = 'fd = open("/dev/urandom", O_RDONLY);'
+miss = 'getrandom(buf, 16, 0);'
+
+[[case]]
+rule = "c_weak_rng"
+hit  = 'int x = rand();'
+miss = 'getrandom(buf, 16, 0);'
+
+[[case]]
+rule = "c_system_popen"
+hit  = 'system("ls -l");'
+miss = 'execv("/bin/ls", args);'
+
+[[case]]
+rule = "c_alloca"
+hit  = 'char *buf = alloca(n);'
+miss = 'char *buf = malloc(n);'
+
+[[case]]
+rule = "c_insecure_tmpfile"
+hit  = 'char *name = tmpnam(NULL);'
+miss = 'int fd = mkstemp(template);'
+
+[[case]]
+rule = "c_setuid_setgid"
+hit  = 'setuid(0);'
+miss = 'prctl(PR_SET_DUMPABLE, 0);'
+
+[[case]]
+rule = "c_signal"
+hit  = 'signal(SIGINT, handler);'
+miss = 'sigaction(SIGINT, &sa, NULL);'
+
+[[case]]
+rule = "c_longjmp"
+hit  = 'setjmp(env);'
+miss = 'return -1;'
+
+[[case]]
+rule = "c_exec_family"
+hit  = 'execvp(cmd, args);'
+miss = 'posix_spawn(&pid, path, NULL, NULL, args, env);'
+
+[[case]]
+rule = "c_syslog_format"
+hit  = 'syslog(LOG_ERR, user_msg);'
+miss = 'log_message(LOG_ERR, "%s", msg);'
+
+[[case]]
+rule = "c_fscanf_variants"
+hit  = 'fscanf(fp, "%s", buf);'
+miss = 'fgets(buf, sizeof(buf), fp);'
+
+[[case]]
+rule = "c_openssl_weak_cipher"
+hit  = 'EVP_des_cbc()'
+miss = 'EVP_aes_256_gcm()'
+
+[[case]]
+rule = "c_crypt_weak_hash"
+hit  = 'crypt(password, salt);'
+miss = 'argon2id_hash_raw(2, 65536, 1, password, passlen, salt, saltlen, hash, hashlen);'
+
+[[case]]
+rule = "c_access_toctou"
+hit  = 'access(path, R_OK);'
+miss = 'int fd = openat(dirfd, path, O_RDONLY | O_NOFOLLOW);'
+
+[[case]]
+rule = "c_readlink"
+hit  = 'readlink(path, buf, sizeof(buf));'
+miss = 'n = recv(sock, buf, sizeof(buf), 0);'
+
+[[case]]
+rule = "c_chown_chmod_toctou"
+hit  = 'chmod(path, 0600);'
+miss = 'fchmod(fd, 0600);'
+
+[[case]]
+rule = "c_getenv"
+hit  = 'char *home = getenv("HOME");'
+miss = 'char *home = getcwd(buf, sizeof(buf));'
+
+[[case]]
+rule = "c_load_library"
+hit  = 'LoadLibraryA("foo.dll");'
+miss = 'GetModuleHandleA("foo.dll");'
+
+[[case]]
+rule = "c_create_process"
+hit  = 'CreateProcessA(NULL, cmdline, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);'
+miss = 'ShellExecuteA(NULL, "open", url, NULL, NULL, SW_SHOW);'
+
+[[case]]
+rule = "c_getlogin_cuserid"
+hit  = 'char *name = getlogin();'
+miss = 'struct passwd *pw = getpwuid(geteuid());'
+
+[[case]]
+rule = "c_getpass_getpw"
+hit  = 'char *pw = getpass("Password: ");'
+miss = 'read_password_secure(buf, sizeof(buf));'
+
+[[case]]
+rule = "c_windows_impersonate"
+hit  = 'ImpersonateLoggedOnUser(hToken);'
+miss = 'AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(tp), NULL, NULL);'
+
+[[case]]
+rule = "c_null_dacl"
+hit  = 'SetSecurityDescriptorDacl(psd, TRUE, NULL, FALSE);'
+miss = 'SetSecurityDescriptorSacl(psd, TRUE, pSacl, FALSE);'
+
+[[case]]
+rule = "c_realpath_getwd"
+hit  = 'realpath(user_path, resolved);'
+miss = 'getcwd(buf, sizeof(buf));'
+
+[[case]]
+rule = "c_weak_rng_extended"
+hit  = 'long r = lrand48();'
+miss = 'getrandom(buf, 8, 0);'
+
+[[case]]
+rule = "c_get_temp_filename"
+hit  = 'GetTempFileNameA(tmpdir, "pfx", 0, buf);'
+miss = 'int fd = mkstemp(template);'
+
+[[case]]
+rule = "c_memcpy_family"
+hit  = 'memcpy(dst, src, len);'
+miss = 'memcpy_s(dst, dst_size, src, len);'
+
+[[case]]
+rule = "c_snprintf_format"
+hit  = 'snprintf(buf, sizeof(buf), user_fmt, val);'
+miss = 'strlcpy(buf, msg, sizeof(buf));'
+
+[[case]]
+rule = "c_tmpfile"
+hit  = 'FILE *f = tmpfile();'
+miss = 'int fd = mkstemp(template);'
+
+[[case]]
+rule = "c_vfork"
+hit  = 'pid_t pid = vfork();'
+miss = 'pid_t pid = fork();'
+
+[[case]]
+rule = "c_wide_str_unsafe"
+hit  = 'wcscpy(dst, src);'
+miss = 'wcsncpy_s(dst, ARRAY_SIZE(dst), src, _TRUNCATE);'
+
+[[case]]
+rule = "c_shell_execute"
+hit  = 'ShellExecuteA(NULL, "open", path, NULL, NULL, SW_SHOW);'
+miss = 'CreateProcessA(NULL, cmdline, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);'
+
+[[case]]
+rule = "c_win_exec"
+hit  = 'WinExec(cmdline, SW_SHOW);'
+miss = 'CreateProcessA(exe, NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);'
+
+[[case]]
+rule = "c_command_injection_ext"
+hit  = 'wordexp(user_input, &we, 0);'
+miss = 'execv("/bin/ls", args);'
+
+[[case]]
+rule = "c_stat_toctou"
+hit  = 'stat(path, &st);'
+miss = 'fstat(fd, &st);'
+
+[[case]]
+rule = "c_obsolete_signal_limit"
+hit  = 'ulimit(UL_GETFSIZE, 0);'
+miss = 'setrlimit(RLIMIT_FSIZE, &rl);'
+
+[[case]]
+rule = "c_glib_unsafe_env"
+hit  = 'const gchar *dir = g_get_tmp_dir();'
+miss = 'const gchar *dir = g_get_current_dir();'
+
+[[case]]
+rule = "c_multibyte_to_wide"
+hit  = 'MultiByteToWideChar(CP_UTF8, 0, src, -1, dst, dstlen);'
+miss = 'WideCharToMultiByte(CP_UTF8, 0, wsrc, -1, dst, dstlen, NULL, NULL);'
+
+[[case]]
+rule = "c_solaris_str_unsafe"
+hit  = 'strecpy(dst, src, end);'
+miss = 'snprintf(dst, dstlen, "%s", src);'
+
+[[case]]
+rule = "c_add_access_allowed_ace"
+hit  = 'AddAccessAllowedAce(pAcl, ACL_REVISION, GENERIC_READ, pSid);'
+miss = 'AddAccessAllowedAceEx(pAcl, ACL_REVISION, OBJECT_INHERIT_ACE, GENERIC_READ, pSid);'
+
+[[case]]
+rule = "c_fopen_toctou"
+hit  = 'FILE *f = fopen(path, "r");'
+miss = 'int fd = openat(dirfd, name, O_RDONLY | O_NOFOLLOW);'

@@ -1,0 +1,170 @@
+# Test fixtures for rules/go_security.toml
+# One [[case]] per rule: hit must fire the rule, miss must NOT fire that rule.
+
+rules_file = "rules/go_security.toml"
+ext        = "go"
+
+[[case]]
+rule = "go_weak_hash_md5"
+hit  = 'h := md5.New()'
+miss = 'h := sha256.New()'
+
+[[case]]
+rule = "go_weak_hash_sha1"
+hit  = 'h := sha1.New()'
+miss = 'h := sha512.New()'
+
+[[case]]
+rule = "go_weak_hash_sha224"
+hit  = 'h := sha256.New224()'
+miss = 'h := sha256.New()'
+
+[[case]]
+rule = "go_weak_cipher_des"
+hit  = 'block, err := des.NewCipher(key)'
+miss = 'block, err := aes.NewCipher(key)'
+
+[[case]]
+rule = "go_weak_cipher_rc4"
+hit  = 'cipher, err := rc4.NewCipher(key)'
+miss = 'block, err := aes.NewCipher(key)'
+
+[[case]]
+rule = "go_math_rand_import"
+hit  = 'import "math/rand"'
+miss = 'import "crypto/rand"'
+
+[[case]]
+rule = "go_tls_sslv3"
+hit  = 'MinVersion: tls.VersionSSL30'
+miss = 'MinVersion: tls.VersionTLS13'
+
+[[case]]
+rule = "go_tls_insecure_cipher"
+hit  = 'tls.TLS_RSA_WITH_RC4_128_SHA'
+miss = 'tls.TLS_AES_128_GCM_SHA256'
+
+[[case]]
+rule = "go_tls_config"
+hit  = 'cfg := &tls.Config{'
+miss = 'cfg := &http.Server{}'
+
+[[case]]
+rule = "go_ssh_insecure_host_key"
+hit  = 'HostKey: ssh.InsecureIgnoreHostKey()'
+miss = 'HostKey: knownhosts.New(knownHostsFile)'
+
+[[case]]
+rule = "go_http_no_tls"
+hit  = 'http.ListenAndServe(":8080", mux)'
+miss = 'http.ListenAndServeTLS(":8443", certFile, keyFile, mux)'
+
+[[case]]
+rule = "go_bind_all_interfaces"
+hit  = 'net.Listen("tcp", "0.0.0.0:8080")'
+miss = 'net.Listen("tcp", "127.0.0.1:8080")'
+
+[[case]]
+rule = "go_grpc_insecure"
+hit  = 'grpc.Dial(addr, grpc.WithInsecure())'
+miss = 'grpc.Dial(addr, grpc.WithTransportCredentials(creds))'
+
+[[case]]
+rule = "go_cgi_import"
+hit  = 'import "net/http/cgi"'
+miss = 'import "net/http"'
+
+[[case]]
+rule = "go_pprof_import"
+hit  = 'import _ "net/http/pprof"'
+miss = 'import "net/http"'
+
+[[case]]
+rule = "go_exec_command"
+hit  = 'cmd := exec.Command("ls", "-l")'
+miss = 'out, err := os.ReadDir(path)'
+
+[[case]]
+rule = "go_syscall_exec"
+hit  = 'syscall.Exec(path, args, env)'
+miss = 'os.StartProcess(path, args, attr)'
+
+[[case]]
+rule = "go_unsafe_usage"
+hit  = 'p := unsafe.Pointer(&x)'
+miss = 't := reflect.TypeOf(x)'
+
+[[case]]
+rule = "go_reflect_by_name"
+hit  = 'v.MethodByName(userInput)'
+miss = 'v.Method(0)'
+
+[[case]]
+rule = "go_reflect_makefunc"
+hit  = 'fn := reflect.MakeFunc(typ, impl)'
+miss = 'v := reflect.ValueOf(x)'
+
+[[case]]
+rule = "go_text_template_import"
+hit  = 'import "text/template"'
+miss = 'import "html/template"'
+
+[[case]]
+rule = "go_unsafe_template_type"
+hit  = 'safe := template.HTML(userInput)'
+miss = 'safe := html.EscapeString(userInput)'
+
+[[case]]
+rule = "go_jwt_none_alg"
+hit  = 'token.SignedString(jwt.SigningMethodNone)'
+miss = 'token.SignedString(jwt.SigningMethodHS256, secret)'
+
+[[case]]
+rule = "go_jwt_parse_unverified"
+hit  = 'token, _, err := parser.ParseUnverified(tokenStr, claims)'
+miss = 'token, err := jwt.Parse(tokenStr, keyFunc)'
+
+[[case]]
+rule = "go_cookie_httponly_false"
+hit  = 'http.Cookie{Name: "session", HttpOnly: false}'
+miss = 'http.Cookie{Name: "session", HttpOnly: true}'
+
+[[case]]
+rule = "go_cookie_secure_false"
+hit  = 'http.Cookie{Name: "session", Secure: false}'
+miss = 'http.Cookie{Name: "session", Secure: true}'
+
+[[case]]
+rule = "go_cookie_samesite_none"
+hit  = 'http.Cookie{SameSite: http.SameSiteNoneMode}'
+miss = 'http.Cookie{SameSite: http.SameSiteStrictMode}'
+
+[[case]]
+rule = "go_decompression_bomb"
+hit  = 'r, err := gzip.NewReader(body)'
+miss = 'io.CopyN(dst, body, maxBytes)'
+
+[[case]]
+rule = "go_zip_reader"
+hit  = 'zr, err := zip.OpenReader(filename)'
+miss = 'f, err := os.Open(filename)'
+
+[[case]]
+rule = "go_tmp_hardcoded_path"
+hit  = 'f, err := os.Create("/tmp/myapp.lock")'
+miss = 'f, err := os.CreateTemp("", "myapp-*.lock")'
+
+[[case]]
+rule = "go_http_file_server"
+hit  = 'http.Handle("/static/", http.FileServer(http.Dir("./static")))'
+miss = 'http.Handle("/static/", http.StripPrefix("/static/", customHandler))'
+
+[[case]]
+rule = "go_otto_vm_run"
+hit  = 'vm := otto.New()'
+miss = 'vm := goja.New()'
+
+[[case]]
+rule = "go_libxml2_xxe"
+hit  = 'doc, err := parser.ParseString(xml, parser.XMLParseNoEnt)'
+miss = 'doc, err := parser.ParseString(xml, parser.XMLParseNoNet)'

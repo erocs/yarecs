@@ -1,0 +1,165 @@
+# Test fixtures for rules/csharp_security.toml
+# One [[case]] per rule: hit must fire the rule, miss must NOT fire that rule.
+
+rules_file = "rules/csharp_security.toml"
+ext        = "cs"
+
+[[case]]
+rule = "cs_deprecated_cipher"
+hit  = 'var des = DES.Create();'
+miss = 'var aes = Aes.Create();'
+
+[[case]]
+rule = "cs_ecb_mode"
+hit  = 'aes.Mode = CipherMode.ECB;'
+miss = 'aes.Mode = CipherMode.CBC;'
+
+[[case]]
+rule = "cs_rsa_pkcs1_padding"
+hit  = 'var formatter = new RSAPKCS1KeyExchangeFormatter(key);'
+miss = 'var formatter = new RSAOaepKeyExchangeFormatter(key);'
+
+[[case]]
+rule = "cs_system_random"
+hit  = 'var rng = new Random();'
+miss = 'var rng = RandomNumberGenerator.Create();'
+
+[[case]]
+rule = "cs_binary_formatter"
+hit  = 'var bf = new BinaryFormatter();'
+miss = 'var json = JsonSerializer.Deserialize<Foo>(stream);'
+
+[[case]]
+rule = "cs_los_formatter"
+hit  = 'var lf = new LosFormatter();'
+miss = 'var json = JsonSerializer.Deserialize<Foo>(stream);'
+
+[[case]]
+rule = "cs_soap_formatter"
+hit  = 'var sf = new SoapFormatter();'
+miss = 'var json = JsonSerializer.Deserialize<Foo>(stream);'
+
+[[case]]
+rule = "cs_net_data_contract_serializer"
+hit  = 'var s = new NetDataContractSerializer();'
+miss = 'var s = new DataContractSerializer(typeof(Foo));'
+
+[[case]]
+rule = "cs_javascript_serializer"
+hit  = 'var js = new JavaScriptSerializer();'
+miss = 'var js = JsonSerializer.Deserialize<Foo>(json);'
+
+[[case]]
+rule = "cs_fspickler"
+hit  = 'var pickle = FsPickler.CreateJsonSerializer();'
+miss = 'var pickle = FsPickler.CreateBinarySerializer();'
+
+[[case]]
+rule = "cs_newtonsoft_type_name_handling"
+hit  = 'settings.TypeNameHandling = TypeNameHandling.All;'
+miss = 'settings.TypeNameHandling = TypeNameHandling.None;'
+
+[[case]]
+rule = "cs_fastjson_bad_list_type"
+hit  = 'JSON.Parameters.BadListTypeChecking = false;'
+miss = 'JSON.Parameters.BadListTypeChecking = true;'
+
+[[case]]
+rule = "cs_data_contract_resolver"
+hit  = 'class MyResolver : DataContractResolver {'
+miss = 'class MyConverter : JsonConverter {'
+
+[[case]]
+rule = "cs_typefilterlevel"
+hit  = 'provider.TypeFilterLevel = TypeFilterLevel.Full;'
+miss = 'provider.AuthorizationModule = null;'
+
+[[case]]
+rule = "cs_process_start"
+hit  = 'Process.Start("cmd.exe", args);'
+miss = 'var p = new Process(); p.StartInfo.FileName = "cmd.exe";'
+
+[[case]]
+rule = "cs_http_client"
+hit  = 'var client = new HttpClient();'
+miss = 'var client = HttpClientFactory.Create();'
+
+[[case]]
+rule = "cs_web_client"
+hit  = 'var wc = new WebClient();'
+miss = 'var client = new HttpClient();'
+
+[[case]]
+rule = "cs_web_request"
+hit  = 'var req = WebRequest.Create(url);'
+miss = 'var req = HttpWebRequest.CreateDefault(uri);'
+
+[[case]]
+rule = "cs_rest_client"
+hit  = 'var client = new RestClient(baseUrl);'
+miss = 'var client = new HttpClient();'
+
+[[case]]
+rule = "cs_jwt_unsigned_tokens"
+hit  = 'params.RequireSignedTokens = false;'
+miss = 'params.RequireSignedTokens = true;'
+
+[[case]]
+rule = "cs_jwt_no_lifetime_validation"
+hit  = 'params.ValidateLifetime = false;'
+miss = 'params.ValidateLifetime = true;'
+
+[[case]]
+rule = "cs_xmlresolver_url"
+hit  = 'doc.XmlResolver = new XmlUrlResolver();'
+miss = 'doc.XmlResolver = null;'
+
+[[case]]
+rule = "cs_dtd_processing_parse"
+hit  = 'settings.DtdProcessing = DtdProcessing.Parse;'
+miss = 'settings.DtdProcessing = DtdProcessing.Prohibit;'
+
+[[case]]
+rule = "cs_xmltextreader"
+hit  = 'var reader = new XmlTextReader(stream);'
+miss = 'var reader = XmlReader.Create(stream, settings);'
+
+[[case]]
+rule = "cs_developer_exception_page"
+hit  = 'app.UseDeveloperExceptionPage();'
+miss = 'app.UseExceptionHandler("/Error");'
+
+[[case]]
+rule = "cs_directory_browser"
+hit  = 'app.UseDirectoryBrowser();'
+miss = 'app.UseStaticFiles();'
+
+[[case]]
+rule = "cs_lockout_disabled"
+hit  = 'await _signInManager.PasswordSignInAsync(user, pass, false, lockoutOnFailure: false);'
+miss = 'await _signInManager.PasswordSignInAsync(user, pass, false, lockoutOnFailure: true);'
+
+[[case]]
+rule = "cs_htmlstring"
+hit  = 'return new HtmlString(userContent);'
+miss = 'return new TagBuilder("div");'
+
+[[case]]
+rule = "cs_html_raw"
+hit  = '@Html.Raw(userInput)'
+miss = '@Html.Encode(userInput)'
+
+[[case]]
+rule = "cs_regex_no_timeout"
+hit  = 'var re = new Regex(pattern);'
+miss = 'bool ok = Regex.IsMatch(input, pattern);'
+
+[[case]]
+rule = "cs_regex_infinite_timeout"
+hit  = 'var re = new Regex(pattern, RegexOptions.None, TimeSpan.InfiniteMatchTimeout);'
+miss = 'var re = new Regex(pattern, RegexOptions.None, TimeSpan.FromSeconds(2));'
+
+[[case]]
+rule = "cs_memory_marshal_span"
+hit  = 'var span = MemoryMarshal.CreateSpan(ref data, length);'
+miss = 'var span = data.AsSpan(0, length);'

@@ -1,0 +1,75 @@
+# Test fixtures for rules/kotlin_security.toml
+# One [[case]] per rule: hit must fire the rule, miss must NOT fire that rule.
+
+rules_file = "rules/kotlin_security.toml"
+ext        = "kt"
+
+[[case]]
+rule = "kt_anonymous_ldap_bind"
+hit  = 'env.put(Context.SECURITY_AUTHENTICATION, "none")'
+miss = 'env.put(Context.SECURITY_AUTHENTICATION, "simple")'
+
+# kt_hexa_conversion is a chain rule: trigger = Integer.toHexString(
+# chain = anywhere_in_method + MessageDigest (negate=false)
+# hit: both trigger and chain pattern in same function body
+# miss: trigger present but no MessageDigest in same function
+[[case]]
+rule = "kt_hexa_conversion"
+hit  = '''
+fun hashHex() {
+    val md = MessageDigest.getInstance("SHA-256")
+    val digest = md.digest(data)
+    val hex = Integer.toHexString(digest[0].toInt())
+}
+'''
+miss = 'fun convert() { val hex = Integer.toHexString(42) }'
+
+[[case]]
+rule = "kt_runtime_exec"
+hit  = 'proc.exec("cmd" + userInput)'
+miss = 'proc.exec("ls")'
+
+[[case]]
+rule = "kt_cookie_httponly_false"
+hit  = 'cookie.setHttpOnly(false)'
+miss = 'cookie.setHttpOnly(true)'
+
+[[case]]
+rule = "kt_cookie_secure_false"
+hit  = 'cookie.setSecure(false)'
+miss = 'cookie.setSecure(true)'
+
+[[case]]
+rule = "kt_default_http_client"
+hit  = 'val client = DefaultHttpClient()'
+miss = 'val client = OkHttpClient()'
+
+[[case]]
+rule = "kt_ecb_cipher"
+hit  = 'val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")'
+miss = 'val cipher = Cipher.getInstance("AES/GCM/NoPadding")'
+
+[[case]]
+rule = "kt_gcm_nonce_reuse"
+hit  = 'val spec = GCMParameterSpec(128, iv)'
+miss = 'val spec = IvParameterSpec(iv)'
+
+[[case]]
+rule = "kt_null_cipher"
+hit  = 'val cipher = NullCipher()'
+miss = 'val cipher = Cipher.getInstance("AES/GCM/NoPadding")'
+
+[[case]]
+rule = "kt_unencrypted_socket"
+hit  = 'val sock = Socket("host", 80)'
+miss = 'val sock = SSLSocketFactory.getDefault().createSocket()'
+
+[[case]]
+rule = "kt_weak_hash_md5"
+hit  = 'val md = MessageDigest.getInstance("MD5")'
+miss = 'val md = MessageDigest.getInstance("SHA-256")'
+
+[[case]]
+rule = "kt_weak_hash_sha1"
+hit  = 'val md = MessageDigest.getInstance("SHA-1")'
+miss = 'val md = MessageDigest.getInstance("SHA-256")'

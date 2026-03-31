@@ -30,7 +30,7 @@
 name     = "java_weak_cipher_blowfish"
 pattern  = '\.getInstance\s*\(\s*"Blowfish"\s*\)'
 scope    = "**"
-search   = "code"
+search   = "all"
 severity = "warning"
 message  = "Blowfish cipher — 64-bit block size vulnerable to SWEET32; use AES/GCM/NoPadding"
 
@@ -39,7 +39,7 @@ message  = "Blowfish cipher — 64-bit block size vulnerable to SWEET32; use AES
 name     = "java_weak_cipher_rc4"
 pattern  = '\.getInstance\s*\(\s*"RC4"\s*\)'
 scope    = "**"
-search   = "code"
+search   = "all"
 severity = "warning"
 message  = "RC4 cipher — broken stream cipher; use AES/GCM/NoPadding"
 
@@ -48,7 +48,7 @@ message  = "RC4 cipher — broken stream cipher; use AES/GCM/NoPadding"
 name     = "java_weak_cipher_rc2"
 pattern  = '\.getInstance\s*\(\s*"RC2"\s*\)'
 scope    = "**"
-search   = "code"
+search   = "all"
 severity = "warning"
 message  = "RC2 cipher — legacy weak cipher forbidden by NIST; use AES/GCM/NoPadding"
 
@@ -64,7 +64,7 @@ message  = "RC2 cipher — legacy weak cipher forbidden by NIST; use AES/GCM/NoP
 name     = "java_cipher_des"
 pattern  = '\.getInstance\s*\(\s*"DES[/"]'
 scope    = "**"
-search   = "code"
+search   = "all"
 severity = "error"
 message  = "DES cipher — 56-bit key, broken; use AES/GCM/NoPadding"
 
@@ -73,7 +73,7 @@ message  = "DES cipher — 56-bit key, broken; use AES/GCM/NoPadding"
 name     = "java_cipher_desede"
 pattern  = '\.getInstance\s*\(\s*"DESede'
 scope    = "**"
-search   = "code"
+search   = "all"
 severity = "warning"
 message  = "DESede (3DES) cipher — 64-bit block (SWEET32), deprecated; use AES/GCM/NoPadding"
 
@@ -90,7 +90,7 @@ message  = "DESede (3DES) cipher — 64-bit block (SWEET32), deprecated; use AES
 name     = "java_cipher_ecb_mode"
 pattern  = '\.getInstance\s*\([^)]*ECB[^)]*\)'
 scope    = "**"
-search   = "code"
+search   = "all"
 severity = "error"
 message  = "ECB cipher mode — deterministic; identical blocks produce identical ciphertext; use AES/GCM/NoPadding"
 
@@ -107,7 +107,7 @@ message  = "ECB cipher mode — deterministic; identical blocks produce identica
 name     = "java_cipher_aes_no_mode"
 pattern  = '\.getInstance\s*\(\s*"AES"\s*\)'
 scope    = "**"
-search   = "code"
+search   = "all"
 severity = "warning"
 message  = "AES without mode — defaults to ECB in most JVMs; specify AES/GCM/NoPadding explicitly"
 
@@ -125,7 +125,7 @@ message  = "AES without mode — defaults to ECB in most JVMs; specify AES/GCM/N
 name     = "java_cbc_pkcs5padding"
 pattern  = '\.getInstance\s*\([^)]*CBC/PKCS5Padding[^)]*\)'
 scope    = "**"
-search   = "code"
+search   = "all"
 severity = "warning"
 message  = "AES/CBC/PKCS5Padding — padding oracle risk (POODLE/Lucky13); prefer AES/GCM/NoPadding"
 
@@ -142,7 +142,7 @@ message  = "AES/CBC/PKCS5Padding — padding oracle risk (POODLE/Lucky13); prefe
 name     = "java_rsa_no_padding"
 pattern  = '\.getInstance\s*\(\s*"RSA[^"]*NoPadding"'
 scope    = "**"
-search   = "code"
+search   = "all"
 severity = "error"
 message  = "RSA without padding — textbook RSA is malleable; use OAEP (RSA/ECB/OAEPWithSHA-256AndMGF1Padding)"
 
@@ -176,7 +176,7 @@ message  = "NullCipher — performs no encryption; data transmitted as plaintext
 name     = "java_md5_digest"
 pattern  = 'MessageDigest\.getInstance\s*\(\s*"MD5"'
 scope    = "**"
-search   = "code"
+search   = "all"
 severity = "error"
 message  = "MD5 hash — collision-broken; use SHA-256 or SHA-3 for integrity, bcrypt/Argon2 for passwords"
 
@@ -195,7 +195,7 @@ message  = "MD5 via DigestUtils — collision-broken; use DigestUtils.getSha256D
 name     = "java_sha1_digest"
 pattern  = 'MessageDigest\.getInstance\s*\(\s*"SHA-?1"'
 scope    = "**"
-search   = "code"
+search   = "all"
 severity = "warning"
 message  = "SHA-1 hash — collision-broken (SHAttered); use SHA-256 or SHA-3"
 
@@ -445,7 +445,7 @@ message  = "Spring Security CSRF disabled — enables CSRF attacks; only disable
 name     = "java_spring_actuator_expose_all"
 pattern  = 'management\.endpoints\.web\.exposure\.include\s*=\s*\*'
 scope    = "**"
-search   = "code"
+search   = "all"
 severity = "warning"
 message  = "Spring Actuator expose include=* — exposes /env, /heapdump, /shutdown; restrict to health,info or add authentication"
 
@@ -550,7 +550,7 @@ message  = "PosixFilePermission.OTHERS_* — grants world-readable/writable/exec
 name     = "java_permissive_cors"
 pattern  = '"Access-Control-Allow-Origin"[^;]*"\*"'
 scope    = "**"
-search   = "code"
+search   = "all"
 severity = "warning"
 message  = "CORS Access-Control-Allow-Origin: * — allows any origin to read responses; restrict to an explicit origin allowlist"
 

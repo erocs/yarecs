@@ -87,7 +87,7 @@ message  = "crypto/rc4 — RC4 is broken; use AES-GCM"
 name     = "go_math_rand_import"
 pattern  = '"math/rand'
 scope    = "**"
-search   = "code"
+search   = "all"
 severity = "warning"
 message  = "math/rand — predictable PRNG; use crypto/rand for security-sensitive values (tokens, salts, nonces)"
 
@@ -173,7 +173,7 @@ message  = "http.ListenAndServe — cleartext HTTP; use http.ListenAndServeTLS f
 name     = "go_bind_all_interfaces"
 pattern  = '\bnet\.Listen\s*\([^,]+,\s*"0\.0\.0\.0:|Listen\s*\([^,]+,\s*":'
 scope    = "**"
-search   = "code"
+search   = "all"
 severity = "warning"
 message  = "Listening on 0.0.0.0 or :port — binds all interfaces; specify a host address to limit exposure"
 
@@ -207,7 +207,7 @@ message  = "grpc.WithInsecure() — disables TLS on gRPC channel; use grpc.WithT
 name     = "go_cgi_import"
 pattern  = '"net/http/cgi"'
 scope    = "**"
-search   = "code"
+search   = "all"
 severity = "warning"
 message  = "net/http/cgi — vulnerable to httpoxy (CVE-2015-5386); use net/http instead"
 
@@ -224,7 +224,7 @@ message  = "net/http/cgi — vulnerable to httpoxy (CVE-2015-5386); use net/http
 name     = "go_pprof_import"
 pattern  = '"net/http/pprof"'
 scope    = "**"
-search   = "code"
+search   = "all"
 severity = "warning"
 message  = "net/http/pprof — auto-exposes /debug/pprof heap/goroutine/CPU profiles; restrict behind authentication or remove from production"
 
@@ -310,7 +310,7 @@ message  = "reflect.MakeFunc — sidesteps type system; ensure user input cannot
 name     = "go_text_template_import"
 pattern  = '"text/template"'
 scope    = "**"
-search   = "code"
+search   = "all"
 severity = "warning"
 message  = "text/template — no HTML escaping; use html/template for web output to prevent XSS"
 
@@ -425,7 +425,7 @@ message  = "zip.OpenReader/NewReader — verify: (1) total extracted bytes bound
 name     = "go_tmp_hardcoded_path"
 pattern  = '"/tmp/'
 scope    = "**"
-search   = "code"
+search   = "all"
 severity = "warning"
 message  = "Hard-coded /tmp path — TOCTOU race / symlink attack; use os.CreateTemp or os.MkdirTemp for atomic safe creation"
 

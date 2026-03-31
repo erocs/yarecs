@@ -1,0 +1,152 @@
+# Test fixtures for rules/unreal_engine5.toml
+# One [[case]] per rule: hit must fire the rule, miss must NOT fire that rule.
+
+rules_file = "rules/unreal_engine5.toml"
+ext        = "cpp"
+
+[[case]]
+rule = "ue5_server_rpc"
+hit  = 'UFUNCTION(Server, Reliable)'
+miss = 'UFUNCTION(Client, Reliable)'
+
+[[case]]
+rule = "ue5_server_rpc_no_validation"
+hit  = 'UFUNCTION(Server, Reliable)'
+miss = 'UFUNCTION(Server, Reliable, WithValidation)'
+
+[[case]]
+rule = "ue5_filepath_no_canonicalisation"
+hit  = '''
+void ProcessFile() {
+    FFilePath path = GetPath();
+}
+'''
+miss = '''
+void ProcessFile() {
+    FFilePath path = GetPath();
+    FString full = FPaths::ConvertRelativePathToFull(path.FilePath);
+}
+'''
+
+[[case]]
+rule = "ue5_filepath_sanitised"
+hit  = '''
+void ProcessFile() {
+    FFilePath path = GetPath();
+    FString full = FPaths::ConvertRelativePathToFull(path.FilePath);
+}
+'''
+miss = '''
+void ProcessFile() {
+    FFilePath path = GetPath();
+}
+'''
+
+[[case]]
+rule = "ue5_exec_ufunction"
+hit  = 'UFUNCTION(Exec)'
+miss = 'UFUNCTION(BlueprintCallable)'
+
+[[case]]
+rule = "ue5_create_proc"
+hit  = '''
+void Launch() {
+    FPlatformProcess::CreateProc(cmd, args, true, false, false, &pid, 0, nullptr, nullptr);
+}
+'''
+miss = '''
+void Launch() {
+    FPlatformProcess::ExecProcess(cmd, args, &ret, &out, &err);
+}
+'''
+
+[[case]]
+rule = "ue5_server_travel"
+hit  = '''
+void Travel() {
+    GetWorld()->ServerTravel("/Game/Map");
+}
+'''
+miss = '''
+void Travel() {
+    GetWorld()->ClientTravel("/Game/Map", TRAVEL_Absolute);
+}
+'''
+
+[[case]]
+rule = "ue5_winsock_direct"
+hit  = '''
+void Init() {
+    WSAStartup(MAKEWORD(2,2), &wsaData);
+}
+'''
+miss = '''
+void Init() {
+    FSocket* sock = ISocketSubsystem::Get()->CreateSocket(NAME_Stream, TEXT("default"), false);
+}
+'''
+
+[[case]]
+rule = "ue5_posix_socket_direct"
+hit  = '''
+void Connect() {
+    ::socket(AF_INET, SOCK_STREAM, 0);
+}
+'''
+miss = '''
+void Connect() {
+    FSocket* sock = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->CreateSocket(NAME_Stream, TEXT("net"), false);
+}
+'''
+
+[[case]]
+rule = "ue5_static_load_class"
+hit  = '''
+void Load() {
+    UClass* cls = StaticLoadClass(UObject::StaticClass(), nullptr, TEXT("/Game/BP_MyClass.BP_MyClass_C"));
+}
+'''
+miss = '''
+void Load() {
+    UClass* cls = UMyClass::StaticClass();
+}
+'''
+
+[[case]]
+rule = "ue5_static_load_object"
+hit  = '''
+void Load() {
+    UObject* obj = StaticLoadObject(UStaticMesh::StaticClass(), nullptr, TEXT("/Game/Meshes/MyMesh"));
+}
+'''
+miss = '''
+void Load() {
+    UObject* obj = MyComponent->GetOwner();
+}
+'''
+
+[[case]]
+rule = "ue5_launch_url"
+hit  = '''
+void Open() {
+    FPlatformProcess::LaunchURL(TEXT("https://example.com"), TEXT(""), nullptr);
+}
+'''
+miss = '''
+void Open() {
+    FPlatformProcess::OpenURL(TEXT("https://example.com"));
+}
+'''
+
+[[case]]
+rule = "ue5_open_level"
+hit  = '''
+void Travel() {
+    UGameplayStatics::OpenLevel(GetWorld(), FName("MyLevel"));
+}
+'''
+miss = '''
+void Travel() {
+    UGameplayStatics::GetCurrentLevelName(GetWorld());
+}
+'''

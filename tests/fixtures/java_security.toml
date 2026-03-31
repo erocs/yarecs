@@ -1,0 +1,210 @@
+# Test fixtures for rules/java_security.toml
+# One [[case]] per rule: hit must fire the rule, miss must NOT fire that rule.
+
+rules_file = "rules/java_security.toml"
+ext        = "java"
+
+[[case]]
+rule = "java_weak_cipher_blowfish"
+hit  = 'Cipher c = Cipher.getInstance("Blowfish");'
+miss = 'Cipher c = Cipher.getInstance("AES/GCM/NoPadding");'
+
+[[case]]
+rule = "java_weak_cipher_rc4"
+hit  = 'Cipher c = Cipher.getInstance("RC4");'
+miss = 'Cipher c = Cipher.getInstance("AES/GCM/NoPadding");'
+
+[[case]]
+rule = "java_weak_cipher_rc2"
+hit  = 'Cipher c = Cipher.getInstance("RC2");'
+miss = 'Cipher c = Cipher.getInstance("AES/GCM/NoPadding");'
+
+[[case]]
+rule = "java_cipher_des"
+hit  = 'Cipher c = Cipher.getInstance("DES/CBC/PKCS5Padding");'
+miss = 'Cipher c = Cipher.getInstance("AES/CBC/PKCS5Padding");'
+
+[[case]]
+rule = "java_cipher_desede"
+hit  = 'Cipher c = Cipher.getInstance("DESede/CBC/PKCS5Padding");'
+miss = 'Cipher c = Cipher.getInstance("AES/GCM/NoPadding");'
+
+[[case]]
+rule = "java_cipher_ecb_mode"
+hit  = 'Cipher c = Cipher.getInstance("AES/ECB/PKCS5Padding");'
+miss = 'Cipher c = Cipher.getInstance("AES/GCM/NoPadding");'
+
+[[case]]
+rule = "java_cipher_aes_no_mode"
+hit  = 'Cipher c = Cipher.getInstance("AES");'
+miss = 'Cipher c = Cipher.getInstance("AES/GCM/NoPadding");'
+
+[[case]]
+rule = "java_cbc_pkcs5padding"
+hit  = 'Cipher c = Cipher.getInstance("AES/CBC/PKCS5Padding");'
+miss = 'Cipher c = Cipher.getInstance("AES/GCM/NoPadding");'
+
+[[case]]
+rule = "java_rsa_no_padding"
+hit  = 'Cipher c = Cipher.getInstance("RSA/ECB/NoPadding");'
+miss = 'Cipher c = Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding");'
+
+[[case]]
+rule = "java_null_cipher"
+hit  = 'Cipher c = new NullCipher();'
+miss = 'Cipher c = Cipher.getInstance("AES/GCM/NoPadding");'
+
+[[case]]
+rule = "java_md5_digest"
+hit  = 'MessageDigest md = MessageDigest.getInstance("MD5");'
+miss = 'MessageDigest md = MessageDigest.getInstance("SHA-256");'
+
+[[case]]
+rule = "java_md5_digest_utils"
+hit  = 'byte[] hash = DigestUtils.md5(data);'
+miss = 'byte[] hash = DigestUtils.sha256(data);'
+
+[[case]]
+rule = "java_sha1_digest"
+hit  = 'MessageDigest md = MessageDigest.getInstance("SHA-1");'
+miss = 'MessageDigest md = MessageDigest.getInstance("SHA-256");'
+
+[[case]]
+rule = "java_sha1_digest_utils"
+hit  = 'MessageDigest md = DigestUtils.getSha1Digest();'
+miss = 'MessageDigest md = DigestUtils.getSha256Digest();'
+
+[[case]]
+rule = "java_custom_message_digest"
+hit  = 'class MyDigest extends MessageDigest {'
+miss = 'class MyDigest extends Object {'
+
+[[case]]
+rule = "java_weak_random"
+hit  = 'Random rng = new Random();'
+miss = 'SecureRandom rng = new SecureRandom();'
+
+[[case]]
+rule = "java_object_deserialization"
+hit  = 'ObjectInputStream ois = new ObjectInputStream(stream);'
+miss = 'DataInputStream dis = new DataInputStream(stream);'
+
+[[case]]
+rule = "java_xml_decoder"
+hit  = 'XMLDecoder decoder = new XMLDecoder(stream);'
+miss = 'SAXParser parser = SAXParserFactory.newInstance().newSAXParser();'
+
+[[case]]
+rule = "java_snakeyaml_unsafe"
+hit  = 'Yaml yaml = new Yaml();'
+miss = 'Yaml yaml = new Yaml(new SafeConstructor());'
+
+[[case]]
+rule = "java_default_http_client"
+hit  = 'HttpClient client = new DefaultHttpClient();'
+miss = 'CloseableHttpClient client = HttpClients.createDefault();'
+
+[[case]]
+rule = "java_unencrypted_socket"
+hit  = 'Socket sock = new Socket("host", 80);'
+miss = 'SSLSocket sock = (SSLSocket) SSLSocketFactory.getDefault().createSocket();'
+
+[[case]]
+rule = "java_noop_hostname_verifier"
+hit  = 'builder.setSSLHostnameVerifier(NoopHostnameVerifier.INSTANCE);'
+miss = 'builder.setSSLHostnameVerifier(new DefaultHostnameVerifier());'
+
+[[case]]
+rule = "java_runtime_exec"
+hit  = 'Runtime.getRuntime().exec(cmd);'
+miss = 'new ProcessBuilder(cmd).start();'
+
+[[case]]
+rule = "java_process_builder"
+hit  = 'ProcessBuilder pb = new ProcessBuilder(args);'
+miss = 'Runtime.getRuntime().exec(cmd);'
+
+[[case]]
+rule = "java_groovy_shell"
+hit  = 'GroovyShell shell = new GroovyShell(binding);'
+miss = 'ScriptEngine engine = new ScriptEngineManager().getEngineByName("js");'
+
+[[case]]
+rule = "java_do_privileged"
+hit  = 'AccessController.doPrivileged(action);'
+miss = 'SecurityManager sm = System.getSecurityManager();'
+
+[[case]]
+rule = "java_script_engine"
+hit  = 'ScriptEngineManager mgr = new ScriptEngineManager();'
+miss = 'ScriptEngine engine = mgr.getEngineByName("js");'
+
+[[case]]
+rule = "java_jwt_none_alg"
+hit  = 'Algorithm alg = Algorithm.none();'
+miss = 'Algorithm alg = Algorithm.HMAC256(secret);'
+
+[[case]]
+rule = "java_spring_csrf_disabled"
+hit  = 'http.csrf().disable();'
+miss = 'http.csrf().csrfTokenRepository(repo);'
+
+[[case]]
+rule = "java_spring_actuator_expose_all"
+hit  = 'String cfg = "management.endpoints.web.exposure.include=*";'
+miss = 'String cfg = "management.endpoints.web.exposure.include=health,info";'
+
+[[case]]
+rule = "java_xxe_document_builder"
+hit  = 'DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();'
+miss = 'SAXParserFactory spf = SAXParserFactory.newInstance();'
+
+[[case]]
+rule = "java_xxe_xmlinputfactory"
+hit  = 'XMLInputFactory xif = XMLInputFactory.newInstance();'
+miss = 'DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();'
+
+[[case]]
+rule = "java_xxe_sax_parser"
+hit  = 'SAXParserFactory spf = SAXParserFactory.newInstance();'
+miss = 'XMLInputFactory xif = XMLInputFactory.newFactory();'
+
+[[case]]
+rule = "java_cookie_httponly_false"
+hit  = 'cookie.setHttpOnly(false);'
+miss = 'cookie.setHttpOnly(true);'
+
+[[case]]
+rule = "java_cookie_secure_false"
+hit  = 'cookie.setSecure(false);'
+miss = 'cookie.setSecure(true);'
+
+[[case]]
+rule = "java_posix_others_permissions"
+hit  = 'perms.add(PosixFilePermission.OTHERS_READ);'
+miss = 'perms.add(PosixFilePermission.OWNER_READ);'
+
+[[case]]
+rule = "java_permissive_cors"
+hit  = 'resp.setHeader("Access-Control-Allow-Origin", "*");'
+miss = 'resp.setHeader("Access-Control-Allow-Origin", "https://example.com");'
+
+[[case]]
+rule = "java_randomstringutils"
+hit  = 'String token = RandomStringUtils.randomAlphanumeric(32);'
+miss = 'String token = UUID.randomUUID().toString();'
+
+[[case]]
+rule = "java_hazelcast_symmetric"
+hit  = 'SymmetricEncryptionConfig cfg = new SymmetricEncryptionConfig();'
+miss = 'SSLConfig cfg = new SSLConfig();'
+
+[[case]]
+rule = "java_spring_http_invoker"
+hit  = 'HttpInvokerServiceExporter exporter = new HttpInvokerServiceExporter();'
+miss = 'RestTemplate client = new RestTemplate();'
+
+[[case]]
+rule = "java_log4j_import"
+hit  = 'import org.apache.logging.log4j.LogManager;'
+miss = 'import org.slf4j.LoggerFactory;'

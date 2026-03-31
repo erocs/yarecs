@@ -1,0 +1,66 @@
+# Test fixtures for rules/rust_security.toml
+# One [[case]] per rule: hit must fire the rule, miss must NOT fire that rule.
+
+rules_file = "rules/rust_security.toml"
+ext        = "rs"
+
+[[case]]
+rule = "rust_insecure_hash"
+hit  = 'let hasher = Md5::new();'
+miss = 'let hasher = sha2::Sha256::new();'
+
+[[case]]
+rule = "rust_unsafe_block"
+hit  = 'unsafe { *ptr }'
+miss = 'let x = 5;'
+
+[[case]]
+rule = "rust_env_args"
+hit  = 'let args: Vec<String> = env::args().collect();'
+miss = 'let args: Vec<String> = std::env::vars().map(|(k, _)| k).collect();'
+
+[[case]]
+rule = "rust_current_exe"
+hit  = 'let exe = env::current_exe()?;'
+miss = 'let dir = env::current_dir()?;'
+
+[[case]]
+rule = "rust_reqwest_accept_invalid_tls"
+hit  = 'let client = Client::builder().danger_accept_invalid_certs(true).build()?;'
+miss = 'let client = Client::builder().timeout(Duration::from_secs(10)).build()?;'
+
+# rust_reqwest_auth_not_sensitive is a chain rule (negate=true):
+# trigger = .insert(header::AUTHORIZATION, ...)
+# chain = set_sensitive anywhere_in_method, negate=true
+# hit: insert without set_sensitive in same function
+# miss: insert WITH set_sensitive in same function (chain suppresses the match)
+[[case]]
+rule = "rust_reqwest_auth_not_sensitive"
+hit  = '''
+fn build_headers() {
+    let val = HeaderValue::from_str(token).unwrap();
+    headers.insert(header::AUTHORIZATION, val);
+}
+'''
+miss = '''
+fn build_headers() {
+    let mut val = HeaderValue::from_str(token).unwrap();
+    val.set_sensitive(true);
+    headers.insert(header::AUTHORIZATION, val);
+}
+'''
+
+[[case]]
+rule = "rust_rustls_dangerous"
+hit  = 'let cfg = rustls::client::DangerousClientConfig::new(config);'
+miss = 'let cfg = rustls::ClientConfig::builder().with_safe_defaults();'
+
+[[case]]
+rule = "rust_ssl_verify_none"
+hit  = 'ctx.set_verify(SSL_VERIFY_NONE);'
+miss = 'ctx.set_verify(SslVerifyMode::PEER);'
+
+[[case]]
+rule = "rust_temp_dir"
+hit  = 'let tmp = env::temp_dir();'
+miss = 'let tmp = tempfile::tempdir()?;'
