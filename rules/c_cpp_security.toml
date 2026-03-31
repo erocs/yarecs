@@ -251,7 +251,7 @@ message = "alloca() — stack allocation with no failure path; attacker-controll
 # the open.  Use mkstemp() / mkostemp() which open atomically.
 [[rules]]
 name    = "c_insecure_tmpfile"
-pattern = '\b(?:tmpnam|tempnam|mktemp)\s*\('
+pattern = '\b(?:tmpnam|tmpnam_r|tempnam|mktemp)\s*\('
 scope   = "**"
 search  = "code"
 severity = "warning"
@@ -413,7 +413,7 @@ message = "crypt/crypt_r — default DES and MD5 variants are broken for passwor
 # programs.  Use open() with O_NOFOLLOW and check errno directly.
 [[rules]]
 name    = "c_access_toctou"
-pattern = '\b(?:access|eaccess|faccessat)\s*\('
+pattern = '\b(?:access|eaccess|faccessat|faccessat2)\s*\('
 scope   = "**"
 search  = "code"
 severity = "warning"
@@ -558,7 +558,7 @@ message = "getpass/getpw — obsolete fixed-size buffers; use a dedicated secure
 # Always check the return value and abort the operation on failure.
 [[rules]]
 name    = "c_windows_impersonate"
-pattern = '\b(?:RpcImpersonateClient|ImpersonateLoggedOnUser|ImpersonateNamedPipeClient|ImpersonateSelf|ImpersonateAnonymousToken|RevertToSelf|SetThreadToken|DdeImpersonateClient)\s*\('
+pattern = '\b(?:RpcImpersonateClient|ImpersonateLoggedOnUser|ImpersonateNamedPipeClient|ImpersonateSelf|ImpersonateAnonymousToken|ImpersonateDdeClientWindow|ImpersonateSecurityContext|CoImpersonateClient|RevertToSelf|SetThreadToken|DdeImpersonateClient)\s*\('
 scope   = "**"
 search  = "code"
 severity = "warning"
@@ -723,7 +723,7 @@ message = "vfork() — shares parent address space; child must call exec()/_exit
 # same overflow and truncation risks as their narrow-character counterparts.
 [[rules]]
 name    = "c_wide_str_unsafe"
-pattern = '\b(?:wcscat|wcsncat|wcscpy|wcsncpy|lstrcpy|lstrcpyn|lstrcat|lstrcatn|StrCat|StrCatBuff|StrCpy|StrCpyN|StrNCat|StrNCpy)\s*\('
+pattern = '\b(?:wcscat|wcsncat|wcscpy|wcsncpy|lstrcpy|lstrcpyn|lstrcat|lstrcatn|lstrcatA|lstrcatW|lstrncat|lstrcatnA|lstrcatnW|StrCat|StrCatBuff|StrCatBuffA|StrCatBuffW|StrCatChainW|StrCatNA|StrCatNW|StrCpy|StrCpyN|StrNCat|StrNCatA|StrNCatW|StrNCpy|_tcscat|_mbscat|_tccat|_mbccat|_ftcscat|_tcscpy|_mbscpy|_tcsncpy|_mbsnbcpy|_tcsncat|_mbsnbcat)\s*\('
 scope   = "**"
 search  = "code"
 severity = "warning"
@@ -763,3 +763,147 @@ scope   = "**"
 search  = "code"
 severity = "error"
 message = "WinExec — legacy API with injectable command string; use CreateProcess with lpApplicationName instead"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Additional command injection — wordexp / p2open
+# CWE-78 (OS Command Injection)
+# Source: 0xdea_semgrep-rules  rule-id: raptor-command-injection
+# ══════════════════════════════════════════════════════════════════════════════
+
+# wordexp() performs shell word-expansion on its argument (glob, $VAR, command
+# substitution).  p2open() is an AIX/Solaris variant of popen().  Both pass
+# user-controlled input through the shell interpreter.
+[[rules]]
+name     = "c_command_injection_ext"
+pattern  = '\b(?:wordexp|p2open)\s*\('
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "wordexp/p2open — shell word-expansion / shell-based pipe; any unvalidated input enables command injection; avoid or allowlist rigorously"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TOCTOU race — stat / lstat / fstatat family
+# CWE-362 (Race Condition), CWE-367 (TOCTOU Race)
+# Source: 0xdea_semgrep-rules  rule-id: raptor-insecure-api-access-stat
+# ══════════════════════════════════════════════════════════════════════════════
+
+# stat()/lstat()/fstatat() check file metadata by path.  Between the stat call
+# and a subsequent open() an attacker can replace the file (symlink swap).
+# Use open(O_NOFOLLOW) then fstat(fd,…) to check attributes on the open fd.
+[[rules]]
+name     = "c_stat_toctou"
+pattern  = '\b(?:stat|lstat|fstatat)\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "stat/lstat/fstatat — TOCTOU: open the file first with O_NOFOLLOW then use fstat(fd,...) to inspect attributes on the open fd"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Obsolete signal / limit functions — gsignal / ssignal / ulimit
+# CWE-676 (Use of Potentially Dangerous Function)
+# Source: 0xdea_semgrep-rules; gitlab_sast-rules  rule-ids: raptor-insecure-api-signal,
+#         c_obsolete_rule-gsignal-ssignal, c_obsolete_rule-ulimit
+# ══════════════════════════════════════════════════════════════════════════════
+
+# gsignal/ssignal are obsolete SVID signal primitives replaced by raise()/sigaction().
+# ulimit() is obsolete; use getrlimit()/setrlimit() instead.
+[[rules]]
+name     = "c_obsolete_signal_limit"
+pattern  = '\b(?:gsignal|ssignal|ulimit)\s*\('
+scope    = "**"
+search   = "code"
+severity = "info"
+message  = "gsignal/ssignal/ulimit — obsolete; use raise()/sigaction() for signals and getrlimit()/setrlimit() for resource limits"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GLib attacker-controlled path — g_get_home_dir / g_get_tmp_dir
+# CWE-807 (Reliance on Untrusted Inputs in a Security Decision)
+# Source: gitlab_sast-rules  rule-ids: c_buffer_rule-g-get-home-dir,
+#         c_buffer_rule-g-get-tmp-dir
+# ══════════════════════════════════════════════════════════════════════════════
+
+# g_get_home_dir() wraps getenv("HOME") and g_get_tmp_dir() wraps getenv("TMP").
+# In setuid/privileged processes these environment variables are attacker-controlled.
+[[rules]]
+name     = "c_glib_unsafe_env"
+pattern  = '\bg_get_(?:home|tmp)_dir\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "g_get_home_dir/g_get_tmp_dir — wraps getenv(HOME/TMP); attacker-controlled in privileged processes; validate before use"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Buffer overflow risk — MultiByteToWideChar
+# CWE-120 (Buffer Copy without Checking Size of Input)
+# Source: gitlab_sast-rules  rule-id: c_buffer_rule-MultiByteToWideChar
+# ══════════════════════════════════════════════════════════════════════════════
+
+# The input size is in bytes but the output buffer size is in wide characters.
+# Callers must compute the required output size separately (call with NULL output
+# first to get the needed character count) to avoid buffer overflow.
+[[rules]]
+name     = "c_multibyte_to_wide"
+pattern  = '\bMultiByteToWideChar\s*\('
+scope    = "**"
+search   = "code"
+severity = "info"
+message  = "MultiByteToWideChar — output buffer in wchar_t units, input in bytes; compute required size with a null-output call first to prevent overflow"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Solaris unsafe string functions — strccpy / strcadd / streadd / strecpy / strtrns
+# CWE-120 (Buffer Copy without Checking Size of Input)
+# Source: gitlab_sast-rules  rule-ids: c_buffer_rule-strccpy-strcadd,
+#         c_buffer_rule-streadd-strecpy, c_buffer_rule-strtrns
+# ══════════════════════════════════════════════════════════════════════════════
+
+# streadd/strecpy require the destination to be 4× the source size (each char
+# may expand to \NNN).  strccpy/strcadd and strtrns have no bounds parameter.
+[[rules]]
+name     = "c_solaris_str_unsafe"
+pattern  = '\b(?:strccpy|strcadd|streadd|strecpy|strtrns)\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "Solaris string function — destination buffer must be 4× source size for streadd/strecpy; no bounds parameter; replace with snprintf"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Windows ACL — AddAccessAllowedAce
+# CWE-732 (Incorrect Permission Assignment for Critical Resource)
+# Source: gitlab_sast-rules  rule-id: c_misc_rule-AddAccessAllowedAce
+# ══════════════════════════════════════════════════════════════════════════════
+
+# AddAccessAllowedAce does not set inheritance bits in the ACE header.
+# If inheritance is required, use AddAccessAllowedAceEx with the appropriate
+# AceFlags (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE).
+[[rules]]
+name     = "c_add_access_allowed_ace"
+pattern  = '\bAddAccessAllowedAce\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "AddAccessAllowedAce — does not set inheritance bits; use AddAccessAllowedAceEx with AceFlags to control inheritance"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TOCTOU hint — fopen / open (path-based file access)
+# CWE-362 (Race Condition), CWE-367 (TOCTOU Race)
+# Source: gitlab_sast-rules  rule-id: c_misc_rule-fopen-open
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Path-based open can be subject to symlink substitution between path resolution
+# and actual access.  Use lstat() first, then open() with O_NOFOLLOW, then
+# fstat() to verify st_dev/st_ino match to confirm the same file was opened.
+[[rules]]
+name     = "c_fopen_toctou"
+pattern  = '\b(?:fopen|open)\s*\('
+scope    = "**"
+search   = "code"
+severity = "info"
+message  = "fopen/open — verify path is not attacker-controlled; use O_NOFOLLOW and fstat to guard against TOCTOU symlink attacks"

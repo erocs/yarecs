@@ -553,3 +553,74 @@ scope    = "**"
 search   = "code"
 severity = "warning"
 message  = "CORS Access-Control-Allow-Origin: * — allows any origin to read responses; restrict to an explicit origin allowlist"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Weak RNG — Apache Commons RandomStringUtils
+# CWE-338 (Use of Cryptographically Weak PRNG)
+# Source: elttam_semgrep-rules  rule-id: randomstringutils-insecure-rng
+# ══════════════════════════════════════════════════════════════════════════════
+
+# RandomStringUtils uses java.util.Random by default — a linear-congruential
+# generator whose state can be reconstructed after observing its output.
+# Pass a SecureRandom instance or use SecureRandomStringUtils instead.
+[[rules]]
+name     = "java_randomstringutils"
+pattern  = '\bRandomStringUtils\s*\.\s*\w+\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "RandomStringUtils — uses java.util.Random (predictable); pass new SecureRandom() or use SecureRandomStringUtils"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Deprecated crypto — Hazelcast SymmetricEncryptionConfig
+# CWE-327 (Use of Broken or Risky Cryptographic Algorithm)
+# Source: gitlab_sast-rules  rule-id: java_crypto_rule-HazelcastSymmetricEncryption
+# ══════════════════════════════════════════════════════════════════════════════
+
+# SymmetricEncryptionConfig uses a deprecated symmetric cipher for Hazelcast
+# cluster communication.  Use TLS/SSL instead via Hazelcast's SSLConfig.
+[[rules]]
+name     = "java_hazelcast_symmetric"
+pattern  = '\bnew\s+(?:com\.hazelcast\.config\.)?SymmetricEncryptionConfig\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "Hazelcast SymmetricEncryptionConfig — deprecated symmetric cipher; configure TLS/SSL via SSLConfig instead"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Unsafe Spring RMI deserialisation — HttpInvokerServiceExporter (CVE-2016-1000027)
+# CWE-502 (Deserialization of Untrusted Data)
+# Source: elttam_semgrep-rules  rule-id: UnsafeHttpInvokerServiceExporter-*
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Spring's HttpInvokerServiceExporter/SimpleHttpInvokerServiceExporter deserialise
+# Java objects from HTTP request bodies without validation — a remote code execution
+# gadget.  Remove these exporters or replace with a safe serialisation format (JSON).
+[[rules]]
+name     = "java_spring_http_invoker"
+pattern  = '\b(?:HttpInvokerServiceExporter|SimpleHttpInvokerServiceExporter|RemoteInvocationSerializingExporter)\b'
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "Spring HttpInvokerServiceExporter — deserialises untrusted Java objects (CVE-2016-1000027); remove or replace with a safe transport (JSON/REST)"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Log4j JNDI lookup — Log4Shell (CVE-2021-44228)
+# CWE-917 (Improper Neutralisation of Special Elements in an Expression Language)
+# Source: kondukto_semgrep-rules  rule-id: log4j-message-lookup-injection
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Any project importing Log4j 2.x prior to 2.16.0 may be vulnerable to Log4Shell.
+# Flag imports for version review; ensure the dependency is >= 2.16.0 and that
+# log4j2.formatMsgNoLookups=true is set for any older version that cannot be upgraded.
+[[rules]]
+name     = "java_log4j_import"
+pattern  = '\bimport\s+org\.apache\.logging\.log4j\b'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "Log4j import — verify version >= 2.16.0 to avoid Log4Shell (CVE-2021-44228); set log4j2.formatMsgNoLookups=true if upgrading is not immediately possible"
