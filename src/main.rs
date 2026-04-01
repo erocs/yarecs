@@ -50,6 +50,38 @@ struct Args {
     /// Write results to this file instead of stdout
     #[arg(short, long)]
     output: Option<PathBuf>,
+
+    /// Directory name(s) to exclude from the scan; may be repeated.
+    /// Matched against each directory component name (not the full path).
+    /// Supports `*` as a wildcard, e.g. `--exclude _build --exclude target --exclude _*`.
+    #[arg(short = 'x', long)]
+    exclude: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Match `name` against `pattern` where `*` matches any sequence of characters
+/// (excluding path separators).  Used for `--exclude` directory filtering.
+fn glob_match(pattern: &str, name: &str) -> bool {
+    let pat: Vec<char> = pattern.chars().collect();
+    let nam: Vec<char> = name.chars().collect();
+    let mut dp = vec![vec![false; nam.len() + 1]; pat.len() + 1];
+    dp[0][0] = true;
+    for i in 1..=pat.len() {
+        if pat[i - 1] == '*' { dp[i][0] = dp[i - 1][0]; }
+    }
+    for i in 1..=pat.len() {
+        for j in 1..=nam.len() {
+            dp[i][j] = if pat[i - 1] == '*' {
+                dp[i - 1][j] || dp[i][j - 1]
+            } else {
+                dp[i - 1][j - 1] && (pat[i - 1] == nam[j - 1])
+            };
+        }
+    }
+    dp[pat.len()][nam.len()]
 }
 
 // ---------------------------------------------------------------------------
@@ -79,6 +111,17 @@ fn main() -> Result<()> {
     for input_path in &args.paths {
         for entry in WalkDir::new(input_path)
             .into_iter()
+            .filter_entry(|e| {
+                // Prune excluded directories before descending into them.
+                if e.file_type().is_dir() {
+                    if let Some(name) = e.file_name().to_str() {
+                        if args.exclude.iter().any(|pat| glob_match(pat, name)) {
+                            return false;
+                        }
+                    }
+                }
+                true
+            })
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().is_file())
         {
@@ -152,4 +195,57 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::glob_match;
+
+    #[test]
+    fn exact_match() {
+        assert!(glob_match("target", "target"));
+        assert!(glob_match("_build", "_build"));
+    }
+
+    #[test]
+    fn exact_no_match() {
+        assert!(!glob_match("target", "targets"));
+        assert!(!glob_match("target", "my_target"));
+    }
+
+    #[test]
+    fn wildcard_prefix() {
+        assert!(glob_match("_*", "_build"));
+        assert!(glob_match("_*", "_cache"));
+        assert!(!glob_match("_*", "build"));
+    }
+
+    #[test]
+    fn wildcard_suffix() {
+        assert!(glob_match("*_test", "my_test"));
+        assert!(!glob_match("*_test", "my_tests"));
+    }
+
+    #[test]
+    fn wildcard_only() {
+        assert!(glob_match("*", "anything"));
+        assert!(glob_match("*", ""));
+    }
+
+    #[test]
+    fn wildcard_infix() {
+        assert!(glob_match("test*data", "testdata"));
+        assert!(glob_match("test*data", "test_extra_data"));
+        assert!(!glob_match("test*data", "testdat"));
+    }
+
+    #[test]
+    fn empty_pattern_matches_empty_only() {
+        assert!(glob_match("", ""));
+        assert!(!glob_match("", "x"));
+    }
 }
