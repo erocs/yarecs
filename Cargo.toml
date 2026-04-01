@@ -13,9 +13,9 @@ toml  = "0.8"
 
 [dependencies]
 # Ripgrep's grep crate - top-level entrypoint to grep-regex, grep-matcher, grep-searcher
-grep = "0.3"
+grep = "0.4"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
-toml = "0.8"
+toml = "1.1"
 walkdir = "2"
 anyhow = "1"
