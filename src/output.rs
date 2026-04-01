@@ -77,27 +77,53 @@ fn write_text(out: &mut dyn Write, matches: &[ScanMatch]) -> io::Result<()> {
 // JSON
 // ---------------------------------------------------------------------------
 
+/// Encode `s` as a JSON string literal (double-quoted, RFC 8259 §7 compliant).
+///
+/// Rust's `{:?}` debug format emits `\u{XXXX}` for non-ASCII characters, which
+/// is Rust syntax and **not** valid JSON.  This function emits `\uXXXX` (exactly
+/// 4 hex digits, no braces) for control characters and passes printable UTF-8
+/// through literally (permitted by RFC 8259 §8.1).
+fn json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '"'  => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c    => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
 fn write_json(out: &mut dyn Write, matches: &[ScanMatch]) -> io::Result<()> {
     writeln!(out, "[")?;
     for (i, m) in matches.iter().enumerate() {
         let scope = m.scope_path.join("::");
         let comma = if i + 1 < matches.len() { "," } else { "" };
         // Hand-rolled JSON to avoid a serde_json dependency.
+        // Use json_str() rather than {:?} — Rust's debug format emits \u{XXXX}
+        // which is not valid JSON (RFC 8259 §7 requires \uXXXX, no braces).
+        let r    = json_str(&m.rule_name);
+        let f    = json_str(&m.file.to_string_lossy());
+        let s    = json_str(&scope);
+        let sev  = json_str(&m.severity.to_string());
+        let ctx  = json_str(&m.context.to_string());
+        let msg  = json_str(&m.message);
+        let mat  = json_str(&m.matched_text);
+        let snip = json_str(&m.snippet);
         writeln!(
             out,
-            "  {{\"rule\":{r:?},\"file\":{f:?},\"line\":{l},\"col\":{c},\
-             \"scope\":{s:?},\"severity\":{sev:?},\"context\":{ctx:?},\
-             \"message\":{msg:?},\"match\":{mat:?},\"snippet\":{snip:?}}}{comma}",
-            r    = m.rule_name,
-            f    = m.file.to_string_lossy(),
-            l    = m.line,
-            c    = m.column,
-            s    = scope,
-            sev  = m.severity.to_string(),
-            ctx  = m.context.to_string(),
-            msg  = m.message,
-            mat  = m.matched_text,
-            snip = m.snippet,
+            "  {{\"rule\":{r},\"file\":{f},\"line\":{l},\"col\":{c},\
+             \"scope\":{s},\"severity\":{sev},\"context\":{ctx},\
+             \"message\":{msg},\"match\":{mat},\"snippet\":{snip}}}{comma}",
+            l = m.line,
+            c = m.column,
         )?;
     }
     writeln!(out, "]")?;
@@ -163,8 +189,10 @@ fn write_sarif(out: &mut dyn Write, matches: &[ScanMatch]) -> io::Result<()> {
     writeln!(out, "      \"rules\": [")?;
     for (i, (id, (msg, sev))) in rule_list.iter().enumerate() {
         let comma = if i + 1 < rule_list.len() { "," } else { "" };
+        let id_s  = json_str(id);
+        let msg_s = json_str(msg);
         writeln!(out,
-            "        {{\"id\": {id:?}, \"shortDescription\": {{\"text\": {msg:?}}}, \
+            "        {{\"id\": {id_s}, \"shortDescription\": {{\"text\": {msg_s}}}, \
              \"defaultConfiguration\": {{\"level\": \"{}\"}}}}{comma}",
             sarif_level(sev)
         )?;
@@ -186,13 +214,17 @@ fn write_sarif(out: &mut dyn Write, matches: &[ScanMatch]) -> io::Result<()> {
         // so SARIF viewers surface everything without needing custom columns.
         let full_msg = format!("{} [{}]{}", m.message, scope, ctx_suffix);
         let uri = sarif_uri(&m.file);
+        let rule_id  = json_str(&m.rule_name);
+        let msg_j    = json_str(&full_msg);
+        let uri_j    = json_str(&uri);
+        let snippet_j = json_str(&m.snippet);
         writeln!(out,
-            "      {{\"ruleId\": {:?}, \"level\": \"{}\", \
-             \"message\": {{\"text\": {full_msg:?}}}, \
+            "      {{\"ruleId\": {rule_id}, \"level\": \"{}\", \
+             \"message\": {{\"text\": {msg_j}}}, \
              \"locations\": [{{\"physicalLocation\": {{\"artifactLocation\": \
-             {{\"uri\": {uri:?}}}, \"region\": {{\"startLine\": {}, \
-             \"startColumn\": {}, \"snippet\": {{\"text\": {:?}}}}}}}}}]}}{comma}",
-            m.rule_name, sarif_level(&m.severity), m.line, m.column, m.snippet,
+             {{\"uri\": {uri_j}}}, \"region\": {{\"startLine\": {}, \
+             \"startColumn\": {}, \"snippet\": {{\"text\": {snippet_j}}}}}}}}}]}}{comma}",
+            sarif_level(&m.severity), m.line, m.column,
         )?;
     }
     writeln!(out, "    ]")?;
@@ -213,4 +245,158 @@ fn sarif_level(sev: &Severity) -> &'static str {
 /// On Windows, backslashes are replaced with forward slashes.
 fn sarif_uri(path: &PathBuf) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::{MatchContext, ScanMatch};
+    use crate::rules::Severity;
+    use std::path::PathBuf;
+
+    // ── json_str unit tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn json_str_plain_ascii() {
+        assert_eq!(json_str("hello"), "\"hello\"");
+    }
+
+    #[test]
+    fn json_str_escapes_double_quote() {
+        assert_eq!(json_str(r#"say "hi""#), r#""say \"hi\"""#);
+    }
+
+    #[test]
+    fn json_str_escapes_backslash() {
+        assert_eq!(json_str(r"a\b"), r#""a\\b""#);
+    }
+
+    #[test]
+    fn json_str_escapes_newline_tab_cr() {
+        assert_eq!(json_str("a\nb\tc\r"), r#""a\nb\tc\r""#);
+    }
+
+    #[test]
+    fn json_str_escapes_control_chars_as_u_xxxx() {
+        // U+0001 and U+001F — must be \u0001 / \u001f, no curly braces
+        assert_eq!(json_str("\x01"), "\"\\u0001\"");
+        assert_eq!(json_str("\x1f"), "\"\\u001f\"");
+    }
+
+    /// Regression: Rust's {:?} emits \u{f800}; json_str must emit the literal
+    /// UTF-8 character (or a valid \uXXXX escape without braces).
+    /// U+F800 is a valid Unicode code point — JSON allows it as UTF-8.
+    #[test]
+    fn json_str_non_ascii_no_curly_brace_escape() {
+        let ch = '\u{f800}';
+        let result = json_str(&ch.to_string());
+        // Must not contain the Rust debug escape syntax \u{...}
+        assert!(!result.contains("\\u{"), "got: {result}");
+        // Must be a valid quoted string containing the literal character
+        assert!(result.starts_with('"') && result.ends_with('"'));
+        let inner = &result[1..result.len() - 1];
+        // The character should appear literally (UTF-8 pass-through)
+        assert!(inner.contains(ch), "got: {result}");
+    }
+
+    #[test]
+    fn json_str_multibyte_unicode_passthrough() {
+        // Emoji (4-byte UTF-8) and CJK (3-byte) pass through literally
+        assert_eq!(json_str("αβγ"), "\"αβγ\"");
+        assert_eq!(json_str("日本語"), "\"日本語\"");
+        assert_eq!(json_str("🎉"), "\"🎉\"");
+    }
+
+    #[test]
+    fn json_str_empty() {
+        assert_eq!(json_str(""), "\"\"");
+    }
+
+    // ── helpers ──────────────────────────────────────────────────────────────
+
+    fn make_match(snippet: &str) -> ScanMatch {
+        ScanMatch {
+            rule_name:    "test_rule".to_string(),
+            file:         PathBuf::from("src/foo.rs"),
+            line:         1,
+            column:       1,
+            scope_path:   vec![],
+            matched_text: "match".to_string(),
+            snippet:      snippet.to_string(),
+            message:      "msg".to_string(),
+            severity:     Severity::Warning,
+            context:      MatchContext::Code,
+        }
+    }
+
+    fn collect(matches: &[ScanMatch], fmt: OutputFormat) -> String {
+        let mut buf = Vec::new();
+        write_results(&mut buf, &fmt, matches).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    // ── JSON output tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn json_output_valid_for_non_ascii_snippet() {
+        // U+F800 in the snippet must not produce \u{f800} (invalid JSON)
+        let m = make_match("md5.Sum([]byte(\"Hello, \u{f800}!\"))");
+        let out = collect(&[m], OutputFormat::Json);
+        assert!(!out.contains("\\u{"), "Rust debug escape leaked into JSON: {out}");
+        // Must be parseable — do a structural sanity check
+        assert!(out.contains("\"snippet\":"));
+    }
+
+    #[test]
+    fn json_output_escapes_backslash_in_snippet() {
+        // A snippet with a literal backslash (e.g. from a Go string) must be
+        // double-escaped so the result is valid JSON (\\ in output)
+        let m = make_match(r"fmt.Println(\n)");
+        let out = collect(&[m], OutputFormat::Json);
+        assert!(out.contains("\\\\"), "backslash not double-escaped: {out}");
+    }
+
+    #[test]
+    fn json_output_escapes_quotes_in_message() {
+        let mut m = make_match("x");
+        m.message = r#"use "safe" instead"#.to_string();
+        let out = collect(&[m], OutputFormat::Json);
+        assert!(out.contains(r#"\"safe\""#), "quotes not escaped: {out}");
+        assert!(!out.contains("\\u{"), "Rust debug escape in output: {out}");
+    }
+
+    // ── SARIF output tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn sarif_output_valid_for_non_ascii_snippet() {
+        let m = make_match("md5.Sum([]byte(\"Hello, \u{f800}!\"))");
+        let out = collect(&[m], OutputFormat::Sarif);
+        assert!(!out.contains("\\u{"), "Rust debug escape in SARIF: {out}");
+        assert!(out.contains("\"snippet\""));
+    }
+
+    #[test]
+    fn sarif_output_escapes_backslash_in_uri() {
+        // Windows-style path — sarif_uri replaces \ with /, but if any \ remains
+        // it must be escaped. Verify no raw backslash appears in the uri field.
+        let mut m = make_match("x");
+        m.file = PathBuf::from(r"src\subdir\foo.rs");
+        let out = collect(&[m], OutputFormat::Sarif);
+        // sarif_uri converts to forward slashes
+        assert!(out.contains("src/subdir/foo.rs"), "path not normalized: {out}");
+    }
+
+    #[test]
+    fn sarif_output_structure_contains_required_keys() {
+        let m = make_match("snippet text");
+        let out = collect(&[m], OutputFormat::Sarif);
+        for key in &["$schema", "version", "runs", "tool", "results", "ruleId", "level",
+                     "message", "locations", "physicalLocation", "region", "snippet"] {
+            assert!(out.contains(key), "missing key {key} in SARIF output");
+        }
+    }
 }
