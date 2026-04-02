@@ -1,0 +1,367 @@
+# generic_shell.toml — Inline password detection for CLI tool invocations
+#
+# Flags command-line tool invocations where a password is passed directly as
+# an argument rather than via a prompt, environment variable, or credentials
+# file.  Hardcoded inline passwords appear in:
+#
+#   • Shell scripts (.sh, .bash, .zsh, .ps1, .bat, .cmd)
+#   • Makefiles, Dockerfiles, CI/CD pipeline definitions
+#   • Application code that shells out (subprocess.run, exec.Command, Runtime.exec)
+#   • String constants that are later passed to a shell
+#
+# Use with --all-files to catch every text file regardless of extension.
+# Use alongside generic_secrets.toml for complementary credential coverage
+# (this file: passwords in flags; generic_secrets.toml: tokens in assignments).
+#
+# Design notes
+# ────────────
+# scope  = "**"   — no scope filter; matches everywhere including string literals
+# search = "all"  — must search inside string literals where shell commands live
+#                   in application code (e.g. subprocess.run("mysql -pSecret"))
+#
+# Severity guide
+# ──────────────
+# error   — tool whose sole purpose is inline password passing (sshpass), or
+#           pattern that can ONLY carry a literal (URL-embedded credentials)
+# warning — password flag whose value is likely hardcoded and is trivially
+#           visible in process listings and shell history
+# info    — flag that is commonly used with variable references ($VAR) and
+#           requires reviewer inspection to determine if the value is literal
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MySQL family  (mysql, mysqldump, mysqladmin)
+# Flag:  -pPASSWORD  (no space — MySQL-specific syntax)
+#        --password=PASSWORD
+# ══════════════════════════════════════════════════════════════════════════════
+
+# -p<value> with no space: the value begins immediately after -p.
+# Exclude -p followed by whitespace (prompts for password — safe) or another
+# flag character.
+[[rules]]
+name     = "shell_mysql_password_flag"
+pattern  = '\b(?:mysql|mysqldump|mysqladmin)\b[^\n]*-p[^-\s\n]'
+scope    = "**"
+search   = "all"
+severity = "warning"
+message  = "mysql/mysqldump/mysqladmin: password passed inline with -p — visible in process list and shell history; use MYSQL_PWD env var or a credentials file (~/.my.cnf)"
+
+[[rules]]
+name     = "shell_mysql_password_option"
+pattern  = '\b(?:mysql|mysqldump|mysqladmin)\b[^\n]*--password=[^$%(\s]'
+scope    = "**"
+search   = "all"
+severity = "warning"
+message  = "mysql/mysqldump/mysqladmin: --password=VALUE — verify the value is a variable reference, not a hardcoded literal"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SQL Server  (sqlcmd, bcp)
+# Flag:  -PPASSWORD  (uppercase P, no space)
+# ══════════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+name     = "shell_sqlcmd_password_flag"
+pattern  = '\b(?:sqlcmd|bcp)\b[^\n]*-P[^-\s\n]'
+scope    = "**"
+search   = "all"
+severity = "warning"
+message  = "sqlcmd/bcp: password passed inline with -P — visible in process list; use SQLCMDPASSWORD env var instead"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Redis
+# Flag:  -a PASSWORD  or  --pass PASSWORD  or  -a=PASSWORD
+# ══════════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+name     = "shell_redis_auth_flag"
+pattern  = '\bredis-cli\b[^\n]*(?:-a\s+[^$%(\s]|-a=[^$%(\s]|--pass(?:word)?\s+[^$%(\s]|--pass(?:word)?=[^$%(\s])'
+scope    = "**"
+search   = "all"
+severity = "warning"
+message  = "redis-cli: password passed inline — use REDISCLI_AUTH env var or --no-auth-warning with a secrets manager"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MongoDB  (mongosh, mongo)
+# URI form:  mongodb://user:PASSWORD@host  or  mongodb+srv://user:PASSWORD@host
+# ══════════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+name     = "shell_mongo_uri_password"
+pattern  = '\bmongodb(?:\+srv)?://[^/@\s]+:[^/@\s]+@'
+scope    = "**"
+search   = "all"
+severity = "warning"
+message  = "MongoDB connection URI contains inline credentials — use environment variable substitution or a secrets manager; never hardcode"
+
+[[rules]]
+name     = "shell_mongosh_password_flag"
+pattern  = '\b(?:mongosh|mongo)\b[^\n]*(?:--password=[^$%(\s]|--password\s+[^$%(\s]|-p\s+[^$%(\s])'
+scope    = "**"
+search   = "all"
+severity = "warning"
+message  = "mongosh/mongo: password passed inline — verify the value is a variable, not a hardcoded literal"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Cassandra  (cqlsh)
+# Flag:  -p PASSWORD  or  --password PASSWORD  or  --password=PASSWORD
+# ══════════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+name     = "shell_cqlsh_password_flag"
+pattern  = '\bcqlsh\b[^\n]*(?:-p\s+[^$%(\s]|--password[=\s][^$%(\s])'
+scope    = "**"
+search   = "all"
+severity = "warning"
+message  = "cqlsh: password passed inline — use cqlshrc credentials file or environment variable instead"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# OpenLDAP tools  (ldapsearch, ldapadd, ldapmodify, ldapdelete, ldappasswd)
+# Flag:  -w PASSWORD  (lowercase w)
+# ══════════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+name     = "shell_ldap_password_flag"
+pattern  = '\bldap(?:search|add|modify|delete|passwd|whoami|compare|modrdn)\b[^\n]*-w\s+[^$%(\s]'
+scope    = "**"
+search   = "all"
+severity = "warning"
+message  = "OpenLDAP tool: password passed inline with -w — use -W to prompt interactively or supply via LDAP_BIND_PW / ldaprc instead"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# sshpass
+# This tool's only purpose is to supply an SSH password inline; any invocation
+# with -p is a red flag.
+# Flag:  -p PASSWORD  or  -pPASSWORD
+# ══════════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+name     = "shell_sshpass"
+pattern  = '\bsshpass\b[^\n]*-p\S'
+scope    = "**"
+search   = "all"
+severity = "error"
+message  = "sshpass -p: SSH password supplied inline — prefer SSH key-based authentication; if a password is unavoidable use -f FILE or -e (SSHPASS env var)"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# curl
+# Flag:  -u USER:PASSWORD  or  --user USER:PASSWORD  or  --user=USER:PASSWORD
+# The colon separates username from password; a colon in the value indicates
+# a password is present.
+# ══════════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+name     = "shell_curl_credentials"
+pattern  = '\bcurl\b[^\n]*(?:-u\s+\S+:\S+|--user[=\s]\S+:\S+)'
+scope    = "**"
+search   = "all"
+severity = "warning"
+message  = "curl: credentials passed inline with -u / --user — use a .netrc file or --netrc-file for script use; verify the password is not hardcoded"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# wget
+# Flag:  --password=PASSWORD  or  --http-password=PASSWORD
+# ══════════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+name     = "shell_wget_password"
+pattern  = '\bwget\b[^\n]*--(?:http-)?password=\S'
+scope    = "**"
+search   = "all"
+severity = "warning"
+message  = "wget: password passed inline — use a .wgetrc or --config file to keep credentials out of the command line"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ncftp family  (ncftpget, ncftpput, ncftp)
+# Flag:  -p PASSWORD
+# ══════════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+name     = "shell_ncftp_password"
+pattern  = '\bncftp(?:get|put|batch)?\b[^\n]*-p\s+[^$%(\s]'
+scope    = "**"
+search   = "all"
+severity = "warning"
+message  = "ncftp: password passed inline with -p — use a bookmarks file (~/.ncftp/bookmarks) or -f host-file instead"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Subversion  (svn)
+# Flag:  --password VALUE
+# ══════════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+name     = "shell_svn_password"
+pattern  = '\bsvn\b[^\n]*--password\s+[^$%(\s]'
+scope    = "**"
+search   = "all"
+severity = "warning"
+message  = "svn: --password VALUE on the command line — password is visible in process list; use cached credentials or a Subversion auth configuration file"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Git HTTPS URL with embedded credentials
+# https://user:PASSWORD@host/repo
+# ══════════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+name     = "shell_git_url_credentials"
+pattern  = '\bgit\b[^\n]*https?://[^/@\s]+:[^/@\s]+@'
+scope    = "**"
+search   = "all"
+severity = "error"
+message  = "git: credentials embedded in HTTPS URL — password/token will be stored in shell history and .git/config; use a credential helper or SSH instead"
+
+# Also catch bare URL-with-creds not preceded by 'git' (e.g. in config strings)
+[[rules]]
+name     = "shell_https_url_credentials"
+pattern  = 'https?://[A-Za-z0-9._%+\-]+:[^/@\s\n]{3,}@[A-Za-z0-9.\-]+'
+scope    = "**"
+search   = "all"
+severity = "warning"
+message  = "HTTPS URL with embedded credentials (user:password@host) — extract to an environment variable or secrets manager"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Docker login
+# Flag:  --password VALUE  or  -p VALUE
+# Note:  --password-stdin is the safe alternative; chain negate suppresses
+#        matches that already use the safe form on the same line.
+# ══════════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+name     = "shell_docker_login_password"
+pattern  = '\bdocker\b[^\n]*\blogin\b[^\n]*(?:--password[=\s][^$%(\s]|-p\s+[^$%(\s])'
+scope    = "**"
+search   = "all"
+severity = "warning"
+message  = "docker login: password passed inline — use --password-stdin (pipe from a secrets manager) instead"
+chain    = [
+    { pattern = '--password-stdin', relationship = "anywhere_in_statement", negate = true },
+]
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Azure CLI  (az)
+# Flag:  --password VALUE  or  -p VALUE  (az login, az ad sp create, etc.)
+# ══════════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+name     = "shell_az_password"
+pattern  = '\baz\b[^\n]*(?:--password[=\s][^$%(\s]|-p\s+[^$%(\s])'
+scope    = "**"
+search   = "all"
+severity = "warning"
+message  = "az CLI: --password VALUE on the command line — use a managed identity, service principal certificate, or AZURE_CLIENT_SECRET env var"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HashiCorp Vault
+# Flag:  password=VALUE  in vault login method args
+# ══════════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+name     = "shell_vault_password"
+pattern  = '\bvault\b[^\n]*\blogin\b[^\n]*password=[^$%(\s]'
+scope    = "**"
+search   = "all"
+severity = "warning"
+message  = "vault login: password= supplied inline — use VAULT_TOKEN env var or a non-interactive auth method (AppRole, AWS IAM, etc.)"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# kubectl
+# Flag:  --password=VALUE  (used with kubectl config set-credentials)
+# ══════════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+name     = "shell_kubectl_password"
+pattern  = '\bkubectl\b[^\n]*--password=[^$%(\s]'
+scope    = "**"
+search   = "all"
+severity = "warning"
+message  = "kubectl: --password= on the command line — prefer certificate-based or token-based authentication; never hardcode cluster credentials"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Helm registry / repo
+# Flag:  --password VALUE  or  --password=VALUE
+# ══════════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+name     = "shell_helm_password"
+pattern  = '\bhelm\b[^\n]*--password[=\s][^$%(\s]'
+scope    = "**"
+search   = "all"
+severity = "warning"
+message  = "helm: --password on the command line — use helm registry login interactively or supply via HELM_REGISTRY_CONFIG from a secrets manager"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Java keytool / jarsigner
+# Flag:  -storepass VALUE  -keypass VALUE  -srcstorepass VALUE  etc.
+# ══════════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+name     = "shell_keytool_password"
+pattern  = '\b(?:keytool|jarsigner)\b[^\n]*-(?:store|key|src(?:store|key)|dest(?:store|key))pass\s+[^$%(\s]'
+scope    = "**"
+search   = "all"
+severity = "warning"
+message  = "keytool/jarsigner: keystore password on the command line — visible in process list; pass via stdin or a CI secrets mechanism"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# OpenSSL passphrase
+# Flag:  -passin pass:PASSWORD  or  -passout pass:PASSWORD
+# ══════════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+name     = "shell_openssl_passin"
+pattern  = '\bopenssl\b[^\n]*-pass(?:in|out)\s+pass:[^\s\n]'
+scope    = "**"
+search   = "all"
+severity = "warning"
+message  = "openssl: pass:VALUE on the command line — use file:PATH, fd:NUM, or env:VAR instead to keep the passphrase out of the command line and shell history"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Windows: net use
+# Syntax:  net use [drive:] \\server\share [password]  (positional, no flag)
+# ══════════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+name     = "shell_net_use_password"
+pattern  = '\bnet\s+use\b[^\n]*\\\\[^\s]+\s+[^/\s\*][^\s]*'
+scope    = "**"
+search   = "all"
+severity = "warning"
+message  = "net use: positional password argument — use * to prompt interactively, or /savecred with Windows Credential Manager for scripted use"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Windows: cmdkey
+# Flag:  /pass:PASSWORD
+# ══════════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+name     = "shell_cmdkey_password"
+pattern  = '\bcmdkey\b[^\n]*/pass:[^\s\n]'
+scope    = "**"
+search   = "all"
+severity = "warning"
+message  = "cmdkey /pass:VALUE — verify the password is not hardcoded; prefer interactive entry or provisioning via Group Policy"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Sysinternals PsExec
+# Flag:  -p PASSWORD  or  /p PASSWORD
+# ══════════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+name     = "shell_psexec_password"
+pattern  = '\bpsexec\b[^\n]*[-/]p\s+[^$%(\s]'
+scope    = "**"
+search   = "all"
+severity = "warning"
+message  = "psexec: password passed inline with -p — visible in process list; prefer running as a service account or using Windows integrated authentication"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Generic catch-all for common password flag patterns not covered above
+# Matches: --password=VALUE  --passwd=VALUE  --pwd=VALUE  -password VALUE
+# Excludes values that start with $ (shell variable) or % (Windows variable).
+# ══════════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+name     = "shell_generic_password_flag"
+pattern  = '--(?:password|passwd|pwd)(?:=|\s+)[^$%\s\-]\S*'
+scope    = "**"
+search   = "all"
+severity = "info"
+message  = "Password flag with potentially hardcoded value — verify the value is a variable reference or prompt, not a literal credential"

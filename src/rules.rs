@@ -144,6 +144,12 @@ pub struct ChainedPattern {
     /// search range.  Useful for "fire only when the safe counterpart is missing"
     /// (e.g. a Server RPC with no `WithValidation`, a file path with no sanitisation call).
     pub negate: bool,
+    /// If `Some(n)`, the search range is clipped to at most `n` source lines before and
+    /// after the trigger match, regardless of what `relationship` would otherwise allow.
+    ///
+    /// This is useful for SQL rules where `WHERE` must appear within a handful of lines
+    /// of `UPDATE … SET`, not anywhere in a large method body.
+    pub within_lines: Option<usize>,
 }
 
 // ---------------------------------------------------------------------------
@@ -184,7 +190,7 @@ struct RuleConfig {
     #[serde(default)]
     word: bool,
     #[serde(default)]
-    multiline: bool,
+    dot_matches_new_line: bool,
     #[serde(default)]
     search: SearchTargetConfig,
     #[serde(default)]
@@ -211,6 +217,8 @@ struct ChainConfig {
     /// See [`ChainedPattern::negate`].
     #[serde(default)]
     negate: bool,
+    /// See [`ChainedPattern::within_lines`].
+    within_lines: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -242,7 +250,8 @@ pub fn load_rules(path: &Path) -> Result<Vec<Rule>> {
         let matcher = RegexMatcherBuilder::new()
             .case_insensitive(rc.case_insensitive)
             .word(rc.word)
-            .multi_line(rc.multiline)
+            .dot_matches_new_line(rc.dot_matches_new_line)
+            .multi_line(rc.dot_matches_new_line)
             .build(&rc.pattern)
             .with_context(|| format!("invalid regex in rule '{}': {}", rc.name, rc.pattern))?;
 
@@ -268,7 +277,7 @@ pub fn load_rules(path: &Path) -> Result<Vec<Rule>> {
                 ChainRelationshipConfig::AnywhereInNamespace => ChainRelationship::AnywhereInNamespace,
                 ChainRelationshipConfig::AnywhereInStatement => ChainRelationship::AnywhereInStatement,
             };
-            Ok(ChainedPattern { matcher: chain_matcher, relationship, negate: cc.negate })
+            Ok(ChainedPattern { matcher: chain_matcher, relationship, negate: cc.negate, within_lines: cc.within_lines })
         }).collect::<Result<Vec<_>>>()?;
 
         Ok(Rule {

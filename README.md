@@ -29,6 +29,7 @@ yarecs [OPTIONS] <PATHS>...
 | `-e, --extensions <LIST>` | `c,cpp,cc,cxx,h,hpp,hh,cs,java,go,rs,kt,kts,swift` | Comma-separated file extensions to scan. |
 | `-f, --format <FORMAT>` | `text` | Output format: `text`, `json`, `csv`, `sarif`. |
 | `-o, --output <FILE>` | *(stdout)* | Write results to a file instead of stdout. Progress and summary always go to stderr. |
+| `--all-files` | — | Scan every file regardless of extension (overrides `--extensions`). Useful for credential or secret scanning where secrets can appear in `.env`, `Makefile`, `Dockerfile`, and files with no extension. Files that cannot be read as UTF-8 are skipped with a warning. |
 | `--dump-scopes` | — | Print the parsed scope tree for each file (useful when writing rules). |
 
 **Exit code:** `0` if no errors, `1` if any `severity = "error"` matches are found.
@@ -39,13 +40,16 @@ Rules are defined in TOML files as an array of `[[rules]]` tables.
 
 ```toml
 [[rules]]
-name     = "no_raw_new"           # unique identifier
-pattern  = "\\bnew\\s+\\w+"       # ripgrep-compatible regex
-scope    = "**::*::*"             # optional scope filter (default: all scopes)
-search   = "code"                 # optional: "code" | "comments" | "all"
-severity = "warning"              # "error" | "warning" | "info"
-message  = "Prefer smart pointers over raw 'new'"
+name                 = "no_raw_new"           # unique identifier
+pattern              = "\\bnew\\s+\\w+"       # ripgrep-compatible regex
+scope                = "**::*::*"             # optional scope filter (default: all scopes)
+search               = "code"                 # optional: "code" | "comments" | "all"
+severity             = "warning"              # "error" | "warning" | "info"
+message              = "Prefer smart pointers over raw 'new'"
+dot_matches_new_line = false                  # optional: true enables `.` to cross newlines
 ```
+
+Set `dot_matches_new_line = true` to make `.` match newlines in the pattern (also enables `multi_line` anchoring). This is useful for rules that need to match SQL or other constructs that span multiple source lines. The `snippet` field in matches will include all lines the match spans.
 
 ### Scope filters
 
@@ -92,6 +96,14 @@ chain   = [
 | `anywhere_in_namespace` | The entire body of the nearest enclosing namespace |
 | `anywhere_in_statement` | The single statement containing the trigger (bounded by `;`, `{`, `}`, skipping those inside comments or strings) |
 
+Use `within_lines = N` to clip any relationship's search range to at most N source lines before and after the trigger. Useful when the companion pattern must be physically close to the trigger — for example, a `WHERE` clause that must appear within a few lines of an `UPDATE`:
+
+```toml
+chain = [
+    { pattern = "\\bWHERE\\b", relationship = "after", within_lines = 5 },
+]
+```
+
 ### Example rule file
 
 ```toml
@@ -135,6 +147,8 @@ message  = "Dangerous call is commented out — verify it stays that way"
 | `rules/kotlin_security.toml` | Kotlin | 12 | Crypto, network, cookies, command injection |
 | `rules/rust_security.toml` | Rust | 10 | TLS, unsafe, process, temp files |
 | `rules/generic_secrets.toml` | Any | 40 | Hardcoded credentials, API keys, private keys, Trojan Source |
+| `rules/generic_shell.toml` | Any | 26 | CLI tool invocations with inline passwords (`-p`, `--password`, etc.) |
+| `rules/generic_sql.toml` | Any | 20 | Raw SQL statements embedded in source — `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `EXEC` |
 
 `generic_secrets.toml` is designed to be layered alongside any language ruleset:
 
@@ -142,6 +156,16 @@ message  = "Dangerous call is commented out — verify it stays that way"
 yarecs --config rules/c_cpp_security.toml \
        --config rules/generic_secrets.toml \
        src/
+```
+
+`generic_shell.toml` and `generic_sql.toml` scan any text file, so use `--all-files` when scanning repositories that may include scripts, config files, or SQL files alongside source code:
+
+```sh
+# Detect inline passwords in shell invocations across all files in the repo
+yarecs --config rules/generic_shell.toml --all-files .
+
+# Detect raw SQL across all source and script files
+yarecs --config rules/generic_sql.toml --all-files src/
 ```
 
 ## Output formats

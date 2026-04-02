@@ -1,0 +1,136 @@
+# Test fixtures for rules/generic_shell.toml
+# One [[case]] per rule: hit must fire the rule, miss must NOT fire that rule.
+# ext = "sh" — rules use scope="**" search="all" so any extension works.
+
+rules_file = "rules/generic_shell.toml"
+ext        = "sh"
+
+[[case]]
+rule = "shell_mysql_password_flag"
+hit  = "mysql -uroot -pSecret123 mydb"
+miss = "mysql -uroot -p mydb"
+
+[[case]]
+rule = "shell_mysql_password_option"
+hit  = "mysql --user=root --password=Secret123 mydb"
+miss = "mysql --user=root --password=$MYSQL_PWD mydb"
+
+[[case]]
+rule = "shell_sqlcmd_password_flag"
+hit  = "sqlcmd -S myserver -U sa -PSecret123 -d mydb"
+miss = "sqlcmd -S myserver -U sa -d mydb"
+
+[[case]]
+rule = "shell_redis_auth_flag"
+hit  = "redis-cli -a Secret123 GET mykey"
+miss = "redis-cli -a $REDISCLI_AUTH GET mykey"
+
+[[case]]
+rule = "shell_mongo_uri_password"
+hit  = 'mongosh "mongodb://admin:Secret123@localhost:27017/mydb"'
+miss = 'mongosh "mongodb://localhost:27017/mydb"'
+
+[[case]]
+rule = "shell_mongosh_password_flag"
+hit  = "mongosh --username admin --password Secret123 localhost"
+miss = "mongosh --username admin --password $MONGO_PWD localhost"
+
+[[case]]
+rule = "shell_cqlsh_password_flag"
+hit  = "cqlsh -u cassandra -p Secret123 localhost"
+miss = "cqlsh -u cassandra -p $CQLSH_PASSWORD localhost"
+
+[[case]]
+rule = "shell_ldap_password_flag"
+hit  = 'ldapsearch -H ldap://server -D "cn=admin,dc=example,dc=com" -w Secret123 -b "dc=example,dc=com"'
+miss = 'ldapsearch -H ldap://server -D "cn=admin,dc=example,dc=com" -w $LDAP_BIND_PW -b "dc=example,dc=com"'
+
+[[case]]
+rule = "shell_sshpass"
+hit  = "sshpass -pSecret123 ssh user@host.example.com"
+miss = "ssh -i ~/.ssh/id_rsa user@host.example.com"
+
+[[case]]
+rule = "shell_curl_credentials"
+hit  = "curl -u admin:Secret123 https://api.example.com/data"
+miss = 'curl -H "Authorization: Bearer $TOKEN" https://api.example.com/data'
+
+[[case]]
+rule = "shell_wget_password"
+hit  = "wget --user=ftpuser --password=Secret123 ftp://ftp.example.com/file.tar.gz"
+miss = "wget --user=ftpuser --ask-password ftp://ftp.example.com/file.tar.gz"
+
+[[case]]
+rule = "shell_ncftp_password"
+hit  = "ncftpget -u ftpuser -p Secret123 ftp.example.com /remote/file.txt"
+miss = "ncftpget -u ftpuser -p $FTP_PASSWORD ftp.example.com /remote/file.txt"
+
+[[case]]
+rule = "shell_svn_password"
+hit  = "svn checkout --username alice --password Secret123 https://svn.example.com/repo"
+miss = "svn checkout --username alice --password $SVN_PASSWORD https://svn.example.com/repo"
+
+[[case]]
+rule = "shell_git_url_credentials"
+hit  = "git clone https://alice:Secret123@github.com/org/repo.git"
+miss = "git clone https://github.com/org/repo.git"
+
+[[case]]
+rule = "shell_https_url_credentials"
+hit  = "https://deploy:Secret123@internal.example.com/api/deploy"
+miss = "https://internal.example.com/api/deploy"
+
+[[case]]
+rule = "shell_docker_login_password"
+hit  = "docker login --username alice --password Secret123 registry.example.com"
+miss = "echo $DOCKER_PASSWORD | docker login --username alice --password-stdin registry.example.com"
+
+[[case]]
+rule = "shell_az_password"
+hit  = "az login --username admin@tenant.onmicrosoft.com --password Secret123"
+miss = "az login --username admin@tenant.onmicrosoft.com --password $AZURE_PASSWORD"
+
+[[case]]
+rule = "shell_vault_password"
+hit  = "vault login -method=userpass username=admin password=Secret123"
+miss = "vault login -method=userpass username=admin password=$VAULT_PASSWORD"
+
+[[case]]
+rule = "shell_kubectl_password"
+hit  = "kubectl config set-credentials cluster-admin --password=Secret123"
+miss = "kubectl config set-credentials cluster-admin --password=$K8S_PASSWORD"
+
+[[case]]
+rule = "shell_helm_password"
+hit  = "helm registry login registry.example.com --username alice --password Secret123"
+miss = "helm registry login registry.example.com --username alice --password $HELM_PASSWORD"
+
+[[case]]
+rule = "shell_keytool_password"
+hit  = "keytool -genkeypair -alias mykey -keystore app.jks -storepass changeit -keypass changeit"
+miss = "keytool -genkeypair -alias mykey -keystore app.jks -storepass $KS_PASSWORD -keypass $KS_PASSWORD"
+
+[[case]]
+rule = "shell_openssl_passin"
+hit  = "openssl rsa -in encrypted.key -out plain.key -passin pass:Secret123"
+miss = "openssl rsa -in encrypted.key -out plain.key -passin env:KEY_PASSWORD"
+
+[[case]]
+rule = "shell_net_use_password"
+hit  = 'net use Z: \\fileserver\share Secret123 /user:DOMAIN\alice'
+miss = 'net use Z: \\fileserver\share * /user:DOMAIN\alice'
+
+[[case]]
+rule = "shell_cmdkey_password"
+hit  = "cmdkey /add:fileserver /user:DOMAIN\\alice /pass:Secret123"
+miss = "cmdkey /list"
+
+[[case]]
+rule = "shell_psexec_password"
+hit  = "psexec \\\\server -u DOMAIN\\admin -p Secret123 cmd.exe /c whoami"
+miss = "psexec \\\\server -u DOMAIN\\admin -p $ADMIN_PASSWORD cmd.exe /c whoami"
+
+[[case]]
+rule = "shell_generic_password_flag"
+hit  = "myapp --password=Secret123 --host=db.example.com"
+miss = "myapp --password=$APP_PASSWORD --host=db.example.com"

@@ -203,3 +203,13 @@ fn rust_security() {
 fn unreal_engine5() {
     run_fixture("tests/fixtures/unreal_engine5.toml");
 }
+
+#[test]
+fn generic_sql() {
+    run_fixture("tests/fixtures/generic_sql.toml");
+}
+
+#[test]
+fn generic_shell() {
+    run_fixture("tests/fixtures/generic_shell.toml");
+}

@@ -1,0 +1,131 @@
+# Test fixtures for rules/generic_sql.toml
+# One [[case]] per rule: hit must fire the rule, miss must NOT fire that rule.
+# ext = "sql" — rules use scope="**" search="all" so any extension works.
+
+rules_file = "rules/generic_sql.toml"
+ext        = "sql"
+
+[[case]]
+rule = "sql_select_star"
+hit  = "SELECT * FROM users WHERE id = 1"
+miss = "SELECT id, name FROM users WHERE id = 1"
+
+[[case]]
+rule = "sql_select"
+hit  = "SELECT id, name FROM users WHERE active = 1"
+miss = "CREATE TABLE users (id INT PRIMARY KEY)"
+
+# Multiline SELECT — the pattern uses dot_matches_new_line so . crosses lines.
+[[case]]
+rule = "sql_select"
+hit  = """
+SELECT id,
+       name
+FROM   users
+WHERE  active = 1
+"""
+miss = "INSERT INTO audit_log (msg) VALUES ('no select here')"
+
+[[case]]
+rule = "sql_insert"
+hit  = "INSERT INTO users (name, email) VALUES (?, ?)"
+miss = "SELECT name, email FROM users"
+
+[[case]]
+rule = "sql_insert_select"
+hit  = "INSERT INTO archive SELECT id, name FROM users WHERE active = 0"
+miss = "INSERT INTO users (name) VALUES ('alice')"
+
+[[case]]
+rule = "sql_update"
+hit  = "UPDATE users SET name = ? WHERE id = ?"
+miss = "SELECT name FROM users WHERE id = ?"
+
+# Multiline UPDATE
+[[case]]
+rule = "sql_update"
+hit  = """
+UPDATE users
+SET    name  = ?,
+       email = ?
+WHERE  id = ?
+"""
+miss = "SELECT * FROM users"
+
+[[case]]
+rule = "sql_update_no_where"
+hit  = """
+UPDATE users
+SET active = 0
+"""
+miss = "UPDATE users SET active = 0 WHERE id = 42"
+
+[[case]]
+rule = "sql_delete"
+hit  = "DELETE FROM sessions WHERE expires_at < NOW()"
+miss = "SELECT * FROM sessions WHERE expires_at < NOW()"
+
+[[case]]
+rule = "sql_delete_no_where"
+hit  = "DELETE FROM sessions"
+miss = "DELETE FROM sessions WHERE expires_at < NOW()"
+
+[[case]]
+rule = "sql_merge"
+hit  = "MERGE INTO target USING source ON target.id = source.id"
+miss = "SELECT * FROM target JOIN source ON target.id = source.id"
+
+[[case]]
+rule = "sql_grant"
+hit  = "GRANT SELECT, INSERT ON mydb.* TO 'appuser'@'localhost'"
+miss = "REVOKE SELECT ON mydb.* FROM 'appuser'@'localhost'"
+
+[[case]]
+rule = "sql_grant_all"
+hit  = "GRANT ALL ON mydb.* TO 'admin'@'%'"
+miss = "GRANT SELECT, INSERT ON mydb.users TO 'appuser'@'localhost'"
+
+[[case]]
+rule = "sql_revoke"
+hit  = "REVOKE UPDATE ON mydb.users FROM 'appuser'@'localhost'"
+miss = "GRANT SELECT ON mydb.users TO 'appuser'@'localhost'"
+
+[[case]]
+rule = "sql_drop_table"
+hit  = "DROP TABLE IF EXISTS old_sessions"
+miss = "CREATE TABLE new_sessions (id BIGINT PRIMARY KEY)"
+
+[[case]]
+rule = "sql_drop_database"
+hit  = "DROP DATABASE legacy_app"
+miss = "CREATE DATABASE new_app"
+
+[[case]]
+rule = "sql_truncate"
+hit  = "TRUNCATE TABLE audit_log"
+miss = "DELETE FROM audit_log WHERE created_at < NOW() - INTERVAL 90 DAY"
+
+[[case]]
+rule = "sql_exec_dynamic"
+hit  = "EXEC(@sqlQuery)"
+miss = "EXEC sp_help 'users'"
+
+[[case]]
+rule = "sql_sp_executesql"
+hit  = "EXEC sp_executesql @stmt"
+miss = "EXEC sp_help 'users'"
+
+[[case]]
+rule = "sql_xp_cmdshell"
+hit  = "EXEC xp_cmdshell 'dir C:\\'"
+miss = "EXEC sp_help 'users'"
+
+[[case]]
+rule = "sql_into_outfile"
+hit  = "SELECT id, name INTO OUTFILE '/tmp/export.csv' FROM users"
+miss = "SELECT id, name INTO @id, @name FROM users WHERE id = 1"
+
+[[case]]
+rule = "sql_load_data_infile"
+hit  = "LOAD DATA INFILE '/tmp/import.csv' INTO TABLE users"
+miss = "SELECT * FROM users"

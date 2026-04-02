@@ -56,6 +56,13 @@ struct Args {
     /// Supports `*` as a wildcard, e.g. `--exclude _build --exclude target --exclude _*`.
     #[arg(short = 'x', long)]
     exclude: Vec<String>,
+
+    /// Scan every file regardless of extension (overrides --extensions).
+    /// Useful for credential scanning where secrets can appear in any text file
+    /// (.env, Makefile, Dockerfile, files with no extension, etc.).
+    /// Files that cannot be read as UTF-8 are still skipped with a warning.
+    #[arg(long)]
+    all_files: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -137,7 +144,7 @@ fn main() -> Result<()> {
             }
 
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-            if !extensions.iter().any(|&e| e == ext) {
+            if !args.all_files && !extensions.iter().any(|&e| e == ext) {
                 continue;
             }
 

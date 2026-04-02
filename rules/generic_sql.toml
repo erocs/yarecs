@@ -1,0 +1,265 @@
+# generic_sql.toml — Raw SQL pattern detection
+#
+# Flags raw SQL statements embedded in source code or SQL script files.
+# Use alongside --all-files and --config rules/generic_sql.toml.
+#
+# Security intent
+# ───────────────
+# Raw SQL strings in application code are a prerequisite for SQL injection when
+# user-supplied values are concatenated rather than parameterised.  These rules
+# do NOT perform taint tracking, but they surface every location where a SQL
+# statement is assembled so reviewers can verify that parameterised queries or
+# an ORM are used consistently.
+#
+# DDL rules (DROP, TRUNCATE, GRANT) flag statements that are dangerous in the
+# wrong context (application code rather than a controlled migration script).
+#
+# Multiline matching
+# ──────────────────
+# All rules use dot_matches_new_line = true so that a single pattern covers
+# both compact single-line forms and the more common multi-line style:
+#
+#   SELECT id, name           SELECT id, name FROM users WHERE id = ?
+#   FROM users
+#   WHERE id = ?
+#
+# scope = "**" matches everywhere — file-level SQL scripts, string literals
+# inside functions, and top-level constants all fire.
+# search = "all" includes matches inside string literals and comments, which
+# is exactly where inline SQL lives in most languages.
+#
+# False-positive guidance
+# ───────────────────────
+# SQL inside comments is annotated "{in comment}" in text output.
+# SQL inside string literals is annotated "{in string}".
+# Scope-filtered runs (e.g. scope = "**::*") can limit noise to method bodies.
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SELECT
+# ══════════════════════════════════════════════════════════════════════════════
+
+# SELECT * is an independent, higher-severity finding because it exposes all
+# columns including ones added later, and prevents the DB from using
+# covering-index optimisations.
+[[rules]]
+name                 = "sql_select_star"
+pattern              = '\bSELECT\s+\*\s+FROM\b'
+dot_matches_new_line = true
+scope                = "**"
+search               = "all"
+severity             = "warning"
+message              = "SELECT * — enumerate required columns explicitly to avoid overfetch and unintended data exposure"
+
+# Generic SELECT … FROM (non-star).  Flags all other SELECT statements for
+# review; lower severity because column selection is explicit.
+[[rules]]
+name                 = "sql_select"
+pattern              = '\bSELECT\b.+\bFROM\b'
+dot_matches_new_line = true
+scope                = "**"
+search               = "all"
+severity             = "info"
+message              = "Raw SQL SELECT — verify parameterised query or ORM is used; ensure column list and WHERE clause are not user-controlled"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# INSERT
+# ══════════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+name                 = "sql_insert"
+pattern              = '\bINSERT\s+INTO\b.+\bVALUES\b'
+dot_matches_new_line = true
+scope                = "**"
+search               = "all"
+severity             = "info"
+message              = "Raw SQL INSERT — verify values are parameterised and not built by string concatenation"
+
+# INSERT … SELECT (data copy between tables — no VALUES keyword)
+[[rules]]
+name                 = "sql_insert_select"
+pattern              = '\bINSERT\s+INTO\b.+\bSELECT\b'
+dot_matches_new_line = true
+scope                = "**"
+search               = "all"
+severity             = "info"
+message              = "Raw SQL INSERT … SELECT — review source query for injection and privilege boundaries"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# UPDATE
+# ══════════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+name                 = "sql_update"
+pattern              = '\bUPDATE\b.+\bSET\b'
+dot_matches_new_line = true
+scope                = "**"
+search               = "all"
+severity             = "info"
+message              = "Raw SQL UPDATE — verify SET values and WHERE clause are parameterised; an absent WHERE clause updates every row"
+
+# UPDATE without a WHERE clause — chain confirms SET present but WHERE absent
+# within 20 lines of the trigger (covers typical multi-line UPDATE blocks while
+# avoiding false negatives from WHERE clauses in unrelated later statements).
+[[rules]]
+name                 = "sql_update_no_where"
+pattern              = '\bUPDATE\b'
+dot_matches_new_line = true
+scope                = "**"
+search               = "all"
+severity             = "warning"
+message              = "SQL UPDATE with no WHERE clause — will modify every row in the table; add a WHERE predicate or make the intent explicit"
+chain = [
+    { pattern = '\bSET\b',   relationship = "after", within_lines = 20, negate = false },
+    { pattern = '\bWHERE\b', relationship = "after", within_lines = 20, negate = true  },
+]
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DELETE
+# ══════════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+name                 = "sql_delete"
+pattern              = '\bDELETE\s+FROM\b'
+dot_matches_new_line = true
+scope                = "**"
+search               = "all"
+severity             = "warning"
+message              = "Raw SQL DELETE — verify WHERE clause is parameterised; missing WHERE deletes all rows"
+
+# DELETE without a WHERE clause — WHERE absent within 10 lines after DELETE FROM.
+[[rules]]
+name                 = "sql_delete_no_where"
+pattern              = '\bDELETE\s+FROM\b'
+dot_matches_new_line = true
+scope                = "**"
+search               = "all"
+severity             = "error"
+message              = "SQL DELETE FROM with no WHERE clause — deletes every row in the table"
+chain = [
+    { pattern = '\bWHERE\b', relationship = "after", within_lines = 10, negate = true },
+]
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MERGE (UPSERT)
+# ══════════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+name                 = "sql_merge"
+pattern              = '\bMERGE\b.+\bUSING\b'
+dot_matches_new_line = true
+scope                = "**"
+search               = "all"
+severity             = "info"
+message              = "Raw SQL MERGE — verify ON condition and WHEN clauses are parameterised"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GRANT / REVOKE — privilege DDL
+# ══════════════════════════════════════════════════════════════════════════════
+
+# GRANT in application code (outside a migration/seed script) is a red flag:
+# it means runtime logic is changing database privileges.
+[[rules]]
+name                 = "sql_grant"
+pattern              = '\bGRANT\b.+\bTO\b'
+dot_matches_new_line = true
+scope                = "**"
+search               = "all"
+severity             = "error"
+message              = "SQL GRANT — privilege assignment should only appear in controlled migration scripts, never in application request paths"
+
+[[rules]]
+name                 = "sql_grant_all"
+pattern              = '\bGRANT\s+ALL\b'
+dot_matches_new_line = true
+scope                = "**"
+search               = "all"
+severity             = "error"
+message              = "SQL GRANT ALL — overly broad privilege grant; specify only the minimum required permissions"
+
+[[rules]]
+name                 = "sql_revoke"
+pattern              = '\bREVOKE\b.+\bFROM\b'
+dot_matches_new_line = true
+scope                = "**"
+search               = "all"
+severity             = "warning"
+message              = "SQL REVOKE — privilege removal in application code is unexpected; move to a migration script"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Destructive DDL — DROP / TRUNCATE
+# ══════════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+name     = "sql_drop_table"
+pattern  = '\bDROP\s+TABLE\b'
+scope    = "**"
+search   = "all"
+severity = "error"
+message  = "SQL DROP TABLE — destructive DDL; must only appear in controlled migration/rollback scripts"
+
+[[rules]]
+name     = "sql_drop_database"
+pattern  = '\bDROP\s+(?:DATABASE|SCHEMA)\b'
+scope    = "**"
+search   = "all"
+severity = "error"
+message  = "SQL DROP DATABASE/SCHEMA — irreversible destructive DDL; should never appear in application code"
+
+[[rules]]
+name     = "sql_truncate"
+pattern  = '\bTRUNCATE\s+(?:TABLE\s+)?\w'
+scope    = "**"
+search   = "all"
+severity = "warning"
+message  = "SQL TRUNCATE — deletes all rows without logging individual deletions; confirm this is intentional and not reachable from untrusted input"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Dynamic / exec SQL — highest injection risk
+# ══════════════════════════════════════════════════════════════════════════════
+
+# SQL Server: EXEC(@sql) or EXECUTE(@sql) — dynamic SQL execution
+[[rules]]
+name     = "sql_exec_dynamic"
+pattern  = '\bEXEC(?:UTE)?\s*\(\s*@'
+scope    = "**"
+search   = "all"
+severity = "error"
+message  = "SQL EXEC(@variable) — dynamic SQL execution; use sp_executesql with typed parameters to prevent injection"
+
+# SQL Server: sp_executesql without parameter list (second arg missing)
+[[rules]]
+name     = "sql_sp_executesql"
+pattern  = '\bsp_executesql\b'
+scope    = "**"
+search   = "all"
+severity = "warning"
+message  = "sp_executesql — verify parameterised form is used (N'...', N'@p type', @p = val); bare sp_executesql with concatenation is injectable"
+
+# SQL Server: xp_cmdshell — OS command execution via SQL
+[[rules]]
+name     = "sql_xp_cmdshell"
+pattern  = '\bxp_cmdshell\b'
+scope    = "**"
+search   = "all"
+severity = "error"
+message  = "xp_cmdshell — executes OS commands from SQL Server; must be disabled in production (sp_configure 'xp_cmdshell', 0)"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MySQL file read/write
+# ══════════════════════════════════════════════════════════════════════════════
+
+[[rules]]
+name     = "sql_into_outfile"
+pattern  = '\bINTO\s+(?:OUT|DUMP)FILE\b'
+scope    = "**"
+search   = "all"
+severity = "error"
+message  = "SQL INTO OUTFILE/DUMPFILE — writes query results to a server-side file; disallowed in hardened configurations (secure_file_priv)"
+
+[[rules]]
+name     = "sql_load_data_infile"
+pattern  = '\bLOAD\s+DATA\s+(?:LOCAL\s+)?INFILE\b'
+scope    = "**"
+search   = "all"
+severity = "error"
+message  = "SQL LOAD DATA INFILE — reads a server-side (or client-side with LOCAL) file; disallowed in hardened configurations and injectable via the filename"

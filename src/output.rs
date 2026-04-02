@@ -68,7 +68,9 @@ fn write_text(out: &mut dyn Write, matches: &[ScanMatch]) -> io::Result<()> {
             m.file.display(), m.line, m.column,
             m.severity, m.message, scope, ctx_tag,
         )?;
-        writeln!(out, "  {}", m.snippet)?;
+        // Indent every line of the snippet (multiline matches span several lines).
+        let indented = m.snippet.replace('\n', "\n  ");
+        writeln!(out, "  {}", indented)?;
     }
     Ok(())
 }

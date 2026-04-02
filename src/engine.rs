@@ -313,6 +313,16 @@ fn chain_satisfied(
             }
         };
 
+        // Clamp to within_lines lines on either side of the trigger, if set.
+        let search = if let Some(n) = cp.within_lines {
+            let bytes = source.as_bytes();
+            let s = retreat_n_lines(bytes, trigger_start, n, body.start).max(search.start);
+            let e = advance_n_lines(bytes, trigger_end, n, body.end).min(search.end);
+            s..e
+        } else {
+            search
+        };
+
         if search.start >= search.end || search.end > source.len() {
             return false;
         }
@@ -364,19 +374,23 @@ fn emit_match(
         column: col,
         scope_path: scope_path.to_vec(),
         matched_text: source[abs..abs + len].to_string(),
-        snippet: extract_snippet(source, abs),
+        snippet: extract_snippet(source, abs, len),
         message: rule.message.clone(),
         severity: rule.severity.clone(),
         context,
     });
 }
 
-/// Extract the full source line containing `byte_pos`, whitespace-trimmed.
-/// Scans backward to the preceding `\n` (or start of source) and forward to
-/// the next `\n` (or end of source).
-fn extract_snippet(source: &str, byte_pos: usize) -> String {
+/// Extract the source lines that the match spans, whitespace-trimmed.
+///
+/// For single-line matches this returns the one line containing `byte_pos`
+/// (same behaviour as before).  For multiline matches every spanned line is
+/// included, joined by `\n`, so callers see the full matched context.
+fn extract_snippet(source: &str, byte_pos: usize, match_len: usize) -> String {
+    let match_end = (byte_pos + match_len).min(source.len());
     let start = source[..byte_pos].rfind('\n').map_or(0, |i| i + 1);
-    let end   = source[byte_pos..].find('\n').map_or(source.len(), |i| byte_pos + i);
+    let end   = source[match_end..].find('\n')
+        .map_or(source.len(), |i| match_end + i);
     source[start..end].trim().to_string()
 }
 
@@ -393,6 +407,37 @@ fn classify_position(
         MatchContext::StringLiteral
     } else {
         MatchContext::Code
+    }
+}
+
+/// Advance `pos` forward by at most `n` newlines, stopping at `limit`.
+/// Returns the byte offset just after the n-th newline (or `limit` if fewer exist).
+fn advance_n_lines(source: &[u8], pos: usize, n: usize, limit: usize) -> usize {
+    let mut p = pos;
+    let mut remaining = n;
+    while p < limit {
+        if source[p] == b'\n' {
+            remaining -= 1;
+            if remaining == 0 { return p + 1; }
+        }
+        p += 1;
+    }
+    limit
+}
+
+/// Retreat `pos` backward by at most `n` newlines, stopping at `floor`.
+/// Returns the byte offset of the start of the line that is `n` newlines before `pos`.
+fn retreat_n_lines(source: &[u8], pos: usize, n: usize, floor: usize) -> usize {
+    if pos <= floor { return floor; }
+    let mut p = pos - 1;
+    let mut remaining = n;
+    loop {
+        if source[p] == b'\n' {
+            if remaining == 0 { return p + 1; }
+            remaining -= 1;
+        }
+        if p == floor { return floor; }
+        p -= 1;
     }
 }
 
@@ -556,6 +601,7 @@ mod tests {
             matcher: RegexMatcherBuilder::new().build(pat).unwrap(),
             relationship: rel,
             negate: false,
+            within_lines: None,
         }).collect();
         Rule {
             name: "chain_test".to_string(),
@@ -588,6 +634,7 @@ mod tests {
             matcher: RegexMatcherBuilder::new().build(pat).unwrap(),
             relationship: rel,
             negate: neg,
+            within_lines: None,
         }).collect();
         Rule {
             name: "chain_neg_test".to_string(),
@@ -1361,5 +1408,180 @@ public:
         let ms = run_single_lang(src, "MyApp::Point::Length", "NEEDLE", "cs");
         assert_eq!(ms.len(), 1);
         assert_eq!(ms[0].scope_path, vec!["MyApp", "Point", "Length"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Multiline regex
+    // -----------------------------------------------------------------------
+
+    /// Explicit `\n` in pattern matches a SQL-style query spanning two lines.
+    /// This works without `multiline = true` because the scope body is searched
+    /// as a single byte slice (no line terminator restriction in the grep crate).
+    #[test]
+    fn multiline_explicit_newline_fires() {
+        // SELECT and FROM are on separate lines in actual code (not inside a string).
+        let src = "class Dao {\n    void query() {\n        SELECT id,\n        FROM users;\n    }\n};\n";
+        // Pattern with explicit \n — no dot_matches_new_line needed.
+        let rule = Rule {
+            name: "sql_select".to_string(),
+            matcher: RegexMatcherBuilder::new()
+                .build(r"\bSELECT\b[^\n]*\n[^\n]*\bFROM\b")
+                .unwrap(),
+            scope_filter: None,
+            message: "raw SQL".to_string(),
+            severity: Severity::Warning,
+            search_target: SearchTarget::All,
+            chain: vec![],
+        };
+        let ms = run(src, &[rule]);
+        assert_eq!(ms.len(), 1);
+        assert!(ms[0].matched_text.contains("SELECT") && ms[0].matched_text.contains("FROM"),
+            "matched_text should span both keywords: {:?}", ms[0].matched_text);
+    }
+
+    /// With `dot_matches_new_line = true` (enabled by `multiline = true` in TOML),
+    /// a pattern using plain `.` can match across newlines.
+    #[test]
+    fn multiline_dot_matches_newline_fires() {
+        let src = "class Dao {\n    void query() {\n        db.exec(SELECT_TOKEN);\n        // FROM_TOKEN referenced here\n    }\n};\n";
+        let rule = Rule {
+            name: "sql_dotall".to_string(),
+            matcher: RegexMatcherBuilder::new()
+                .multi_line(true)
+                .dot_matches_new_line(true)
+                .build(r"\bSELECT_TOKEN\b.+\bFROM_TOKEN\b")
+                .unwrap(),
+            scope_filter: None,
+            message: "raw SQL".to_string(),
+            severity: Severity::Warning,
+            search_target: SearchTarget::All,
+            chain: vec![],
+        };
+        let ms = run(src, &[rule]);
+        assert_eq!(ms.len(), 1);
+        assert!(ms[0].matched_text.contains("SELECT_TOKEN") && ms[0].matched_text.contains("FROM_TOKEN"));
+    }
+
+    /// A multiline match's snippet covers all spanned lines.
+    #[test]
+    fn multiline_snippet_spans_matched_lines() {
+        // Two-line match: SELECT on line 3, FROM on line 4.
+        let src = "class Dao {\n    void query() {\n        SELECT id,\n        FROM users;\n    }\n};\n";
+        let rule = Rule {
+            name: "sql_select".to_string(),
+            matcher: RegexMatcherBuilder::new()
+                .multi_line(true)
+                .dot_matches_new_line(true)
+                .build(r"\bSELECT\b.+\bFROM\b")
+                .unwrap(),
+            scope_filter: None,
+            message: "raw SQL".to_string(),
+            severity: Severity::Warning,
+            search_target: SearchTarget::All,
+            chain: vec![],
+        };
+        let ms = run(src, &[rule]);
+        assert_eq!(ms.len(), 1);
+        // Snippet must contain both lines.
+        assert!(ms[0].snippet.contains("SELECT"), "snippet missing SELECT: {:?}", ms[0].snippet);
+        assert!(ms[0].snippet.contains("FROM"),   "snippet missing FROM: {:?}", ms[0].snippet);
+    }
+
+    /// within_lines: chain fires when the companion pattern is within the line window.
+    #[test]
+    fn within_lines_fires_when_companion_close() {
+        // WHERE appears 2 lines after SET — within_lines = 3 should fire.
+        let src = "class Dao {\n    void q() {\n        UPDATE users\n        SET name = ?\n        WHERE id = ?;\n    }\n};\n";
+        let rule = Rule {
+            name: "upd".to_string(),
+            matcher: RegexMatcherBuilder::new().build(r"\bUPDATE\b").unwrap(),
+            scope_filter: None,
+            message: "t".to_string(),
+            severity: Severity::Warning,
+            search_target: SearchTarget::All,
+            chain: vec![ChainedPattern {
+                matcher: RegexMatcherBuilder::new().build(r"\bWHERE\b").unwrap(),
+                relationship: ChainRelationship::After,
+                negate: false,
+                within_lines: Some(3),
+            }],
+        };
+        assert_eq!(run(src, &[rule]).len(), 1);
+    }
+
+    /// within_lines: chain suppressed when companion is beyond the line window.
+    #[test]
+    fn within_lines_suppressed_when_companion_too_far() {
+        // WHERE appears 6 lines after SET — within_lines = 3 should suppress.
+        let src = "class Dao {\n    void q() {\n        UPDATE users\n        SET a = 1,\n        b = 2,\n        c = 3,\n        d = 4\n        WHERE id = ?;\n    }\n};\n";
+        let rule = Rule {
+            name: "upd".to_string(),
+            matcher: RegexMatcherBuilder::new().build(r"\bUPDATE\b").unwrap(),
+            scope_filter: None,
+            message: "t".to_string(),
+            severity: Severity::Warning,
+            search_target: SearchTarget::All,
+            chain: vec![ChainedPattern {
+                matcher: RegexMatcherBuilder::new().build(r"\bWHERE\b").unwrap(),
+                relationship: ChainRelationship::After,
+                negate: false,
+                within_lines: Some(3),
+            }],
+        };
+        assert_eq!(run(src, &[rule]).len(), 0);
+    }
+
+    /// within_lines: companion present but source ends before the window is exhausted.
+    /// Must not panic or miss the match when fewer than N lines remain after the trigger.
+    #[test]
+    fn within_lines_fires_at_end_of_source() {
+        // WHERE is 1 line after UPDATE but the file ends immediately after — within_lines=5.
+        let src = "class Dao {\n    void q() {\n        UPDATE t SET x = 1\n        WHERE id = 1;\n    }\n};\n";
+        let rule = Rule {
+            name: "upd".to_string(),
+            matcher: RegexMatcherBuilder::new().build(r"\bUPDATE\b").unwrap(),
+            scope_filter: None,
+            message: "t".to_string(),
+            severity: Severity::Warning,
+            search_target: SearchTarget::All,
+            chain: vec![ChainedPattern {
+                matcher: RegexMatcherBuilder::new().build(r"\bWHERE\b").unwrap(),
+                relationship: ChainRelationship::After,
+                negate: false,
+                within_lines: Some(5),  // more lines than exist after trigger
+            }],
+        };
+        assert_eq!(run(src, &[rule]).len(), 1, "should fire even when window exceeds remaining source");
+    }
+
+    /// within_lines: negate fires when companion absent and window hits end of source.
+    #[test]
+    fn within_lines_negate_at_end_of_source() {
+        let src = "class Dao {\n    void q() {\n        DELETE FROM t;\n    }\n};\n";
+        let rule = Rule {
+            name: "del".to_string(),
+            matcher: RegexMatcherBuilder::new().build(r"\bDELETE\b").unwrap(),
+            scope_filter: None,
+            message: "t".to_string(),
+            severity: Severity::Warning,
+            search_target: SearchTarget::All,
+            chain: vec![ChainedPattern {
+                matcher: RegexMatcherBuilder::new().build(r"\bWHERE\b").unwrap(),
+                relationship: ChainRelationship::After,
+                negate: true,
+                within_lines: Some(10),
+            }],
+        };
+        assert_eq!(run(src, &[rule]).len(), 1, "negate should fire when WHERE absent within window");
+    }
+
+    /// A single-line match snippet is unchanged (regression guard).
+    #[test]
+    fn singleline_snippet_unchanged() {
+        let src = "class Foo {\n    void bar() { NEEDLE(); }\n};\n";
+        let ms = run_single(src, "Foo::bar", "NEEDLE");
+        assert_eq!(ms.len(), 1);
+        assert!(!ms[0].snippet.contains('\n'), "single-line snippet should have no newlines");
+        assert!(ms[0].snippet.contains("NEEDLE"));
     }
 }
