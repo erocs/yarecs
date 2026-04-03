@@ -386,12 +386,40 @@ fn emit_match(
 /// For single-line matches this returns the one line containing `byte_pos`
 /// (same behaviour as before).  For multiline matches every spanned line is
 /// included, joined by `\n`, so callers see the full matched context.
+///
+/// If the resulting snippet exceeds 2 KB (e.g. a minified JS file with no
+/// newlines), it is trimmed to a window around the match with ellipsis markers
+/// so the output stays manageable.
 fn extract_snippet(source: &str, byte_pos: usize, match_len: usize) -> String {
+    const MAX_SNIPPET_BYTES: usize = 2048;
+    const CONTEXT_BEFORE: usize = 120;
+    const CONTEXT_AFTER: usize = 120;
+
     let match_end = (byte_pos + match_len).min(source.len());
     let start = source[..byte_pos].rfind('\n').map_or(0, |i| i + 1);
     let end   = source[match_end..].find('\n')
         .map_or(source.len(), |i| match_end + i);
-    source[start..end].trim().to_string()
+    let raw = source[start..end].trim();
+
+    if raw.len() <= MAX_SNIPPET_BYTES {
+        return raw.to_string();
+    }
+
+    // Trim adjustments: raw starts at the first non-whitespace byte of the line.
+    let leading_ws = source[start..end].len() - source[start..end].trim_start().len();
+    let rel_start = byte_pos.saturating_sub(start + leading_ws);
+    let rel_end   = match_end.saturating_sub(start + leading_ws).min(raw.len());
+
+    let win_start = rel_start.saturating_sub(CONTEXT_BEFORE);
+    // Snap to a valid UTF-8 boundary.
+    let win_start = (0..=win_start).rev().find(|&i| raw.is_char_boundary(i)).unwrap_or(0);
+
+    let win_end_raw = (rel_end + CONTEXT_AFTER).min(raw.len());
+    let win_end = (win_end_raw..=raw.len()).find(|&i| raw.is_char_boundary(i)).unwrap_or(raw.len());
+
+    let prefix = if win_start > 0 { "…" } else { "" };
+    let suffix = if win_end < raw.len() { "…" } else { "" };
+    format!("{}{}{}", prefix, &raw[win_start..win_end], suffix)
 }
 
 /// Determine whether byte `pos` falls inside a comment, a string literal, or plain code.
@@ -1583,5 +1611,50 @@ public:
         assert_eq!(ms.len(), 1);
         assert!(!ms[0].snippet.contains('\n'), "single-line snippet should have no newlines");
         assert!(ms[0].snippet.contains("NEEDLE"));
+    }
+
+    /// Snippets from huge single lines (e.g. minified JS) are trimmed to a
+    /// window around the match and never exceed ~300 bytes.
+    #[test]
+    fn large_line_snippet_is_trimmed() {
+        // Build a single massive line: 1500 chars of 'a', then NEEDLE, then 1500 chars of 'b'.
+        // Wrap in a minimal class+method so the engine produces a match.
+        let pad_a = "a".repeat(1500);
+        let pad_b = "b".repeat(1500);
+        let inner = format!("{pad_a}NEEDLE(){pad_b}");
+        let src = format!("class F {{\n    void g() {{ {inner} }}\n}};\n");
+
+        let ms = run_single(&src, "F::g", "NEEDLE");
+        assert_eq!(ms.len(), 1, "should match once");
+
+        let snip = &ms[0].snippet;
+        // Must be well under the 2 KB threshold (the raw line is ~3 KB).
+        assert!(
+            snip.len() < 400,
+            "trimmed snippet too long ({} bytes): {snip:.80}…",
+            snip.len()
+        );
+        // The match itself must still be present.
+        assert!(snip.contains("NEEDLE"), "snippet missing NEEDLE: {snip}");
+        // Ellipsis markers indicate truncation on both sides.
+        assert!(snip.starts_with('…'), "expected leading ellipsis, got: {snip:.40}");
+        assert!(snip.ends_with('…'), "expected trailing ellipsis, got: …{}", &snip[snip.len().saturating_sub(40)..]);
+    }
+
+    /// Lines just under 2 KB are returned verbatim (no spurious trimming).
+    #[test]
+    fn line_under_threshold_not_trimmed() {
+        // 2000 chars total: pad + NEEDLE + pad, no ellipsis expected.
+        let pad = "x".repeat(996);
+        let inner = format!("{pad}NEEDLE(){pad}");
+        assert!(inner.len() < 2048, "precondition: inner line under threshold");
+        let src = format!("class F {{\n    void g() {{ {inner} }}\n}};\n");
+
+        let ms = run_single(&src, "F::g", "NEEDLE");
+        assert_eq!(ms.len(), 1);
+        let snip = &ms[0].snippet;
+        assert!(!snip.starts_with('…'), "should not trim a line under threshold");
+        assert!(!snip.ends_with('…'), "should not trim a line under threshold");
+        assert!(snip.contains("NEEDLE"));
     }
 }
