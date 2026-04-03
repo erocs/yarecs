@@ -11,6 +11,12 @@ hit  = "mysql -uroot -pSecret123 mydb"
 miss = "mysql -uroot -p mydb"
 
 [[case]]
+rule = "shell_mysql_password_flag"
+# Regression: hyphenated package name "mysql-python" must not fire
+hit  = "mysql -h db.example.com -pSecret123 mydb"
+miss = "mysql-python: blah mysql-python blah blah"
+
+[[case]]
 rule = "shell_mysql_password_option"
 hit  = "mysql --user=root --password=Secret123 mydb"
 miss = "mysql --user=root --password=$MYSQL_PWD mydb"

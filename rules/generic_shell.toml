@@ -39,7 +39,7 @@
 # flag character.
 [[rules]]
 name     = "shell_mysql_password_flag"
-pattern  = '\b(?:mysql|mysqldump|mysqladmin)\b[^\n]*-p[^-\s\n]'
+pattern  = '\b(?:mysql|mysqldump|mysqladmin)[ \t][^\n]*-p[^-\s\n]'
 scope    = "**"
 search   = "all"
 severity = "warning"
@@ -47,7 +47,7 @@ message  = "mysql/mysqldump/mysqladmin: password passed inline with -p — visib
 
 [[rules]]
 name     = "shell_mysql_password_option"
-pattern  = '\b(?:mysql|mysqldump|mysqladmin)\b[^\n]*--password=[^$%(\s]'
+pattern  = '\b(?:mysql|mysqldump|mysqladmin)[ \t][^\n]*--password=[^$%(\s]'
 scope    = "**"
 search   = "all"
 severity = "warning"
