@@ -12,6 +12,18 @@ use crate::engine::{MatchContext, ScanMatch};
 use crate::rules::Severity;
 
 // ---------------------------------------------------------------------------
+// Scan metadata
+// ---------------------------------------------------------------------------
+
+/// Provenance information embedded in output formats that support it.
+pub struct ScanMetadata<'a> {
+    /// Rule config files that were loaded (from `--config`).
+    pub configs: &'a [PathBuf],
+    /// Reconstructed command line (`std::env::args().collect().join(" ")`).
+    pub command_line: &'a str,
+}
+
+// ---------------------------------------------------------------------------
 // Format enum
 // ---------------------------------------------------------------------------
 
@@ -36,12 +48,13 @@ pub fn write_results(
     out: &mut dyn Write,
     format: &OutputFormat,
     matches: &[ScanMatch],
+    meta: &ScanMetadata,
 ) -> io::Result<()> {
     match format {
-        OutputFormat::Text  => write_text(out, matches),
-        OutputFormat::Json  => write_json(out, matches),
+        OutputFormat::Text  => write_text(out, matches, meta),
+        OutputFormat::Json  => write_json(out, matches, meta),
         OutputFormat::Csv   => write_csv(out, matches),
-        OutputFormat::Sarif => write_sarif(out, matches),
+        OutputFormat::Sarif => write_sarif(out, matches, meta),
     }
 }
 
@@ -49,7 +62,16 @@ pub fn write_results(
 // Text
 // ---------------------------------------------------------------------------
 
-fn write_text(out: &mut dyn Write, matches: &[ScanMatch]) -> io::Result<()> {
+fn write_text(out: &mut dyn Write, matches: &[ScanMatch], meta: &ScanMetadata) -> io::Result<()> {
+    // Header: rule files and command used to produce this output.
+    let configs = meta.configs.iter()
+        .map(|p| p.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(", ");
+    writeln!(out, "yarecs scan — config: {configs}")?;
+    writeln!(out, "command: {}", meta.command_line)?;
+    writeln!(out)?;
+
     for m in matches {
         let scope = if m.scope_path.is_empty() {
             "<global>".to_string()
@@ -103,8 +125,20 @@ fn json_str(s: &str) -> String {
     out
 }
 
-fn write_json(out: &mut dyn Write, matches: &[ScanMatch]) -> io::Result<()> {
-    writeln!(out, "[")?;
+fn write_json(out: &mut dyn Write, matches: &[ScanMatch], meta: &ScanMetadata) -> io::Result<()> {
+    // Metadata object wraps the matches array so consumers can identify the scan.
+    let cmd = json_str(meta.command_line);
+    writeln!(out, "{{")?;
+    writeln!(out, "  \"metadata\": {{")?;
+    write!(out, "    \"configs\": [")?;
+    for (i, p) in meta.configs.iter().enumerate() {
+        let comma = if i + 1 < meta.configs.len() { "," } else { "" };
+        write!(out, "{}{comma}", json_str(&p.to_string_lossy()))?;
+    }
+    writeln!(out, "],")?;
+    writeln!(out, "    \"command\": {cmd}")?;
+    writeln!(out, "  }},")?;
+    writeln!(out, "  \"matches\": [")?;
     for (i, m) in matches.iter().enumerate() {
         let scope = m.scope_path.join("::");
         let comma = if i + 1 < matches.len() { "," } else { "" };
@@ -121,14 +155,15 @@ fn write_json(out: &mut dyn Write, matches: &[ScanMatch]) -> io::Result<()> {
         let snip = json_str(&m.snippet);
         writeln!(
             out,
-            "  {{\"rule\":{r},\"file\":{f},\"line\":{l},\"col\":{c},\
+            "    {{\"rule\":{r},\"file\":{f},\"line\":{l},\"col\":{c},\
              \"scope\":{s},\"severity\":{sev},\"context\":{ctx},\
              \"message\":{msg},\"match\":{mat},\"snippet\":{snip}}}{comma}",
             l = m.line,
             c = m.column,
         )?;
     }
-    writeln!(out, "]")?;
+    writeln!(out, "  ]")?;
+    writeln!(out, "}}")?;
     Ok(())
 }
 
@@ -171,7 +206,7 @@ fn csv_field(s: &str) -> String {
 // SARIF v2.1.0
 // ---------------------------------------------------------------------------
 
-fn write_sarif(out: &mut dyn Write, matches: &[ScanMatch]) -> io::Result<()> {
+fn write_sarif(out: &mut dyn Write, matches: &[ScanMatch], meta: &ScanMetadata) -> io::Result<()> {
     // Collect unique rules in deterministic order (BTreeMap sorts by key).
     // Value is (message, severity) from the first occurrence of each rule ID.
     let mut rule_meta: BTreeMap<&str, (&str, &Severity)> = BTreeMap::new();
@@ -201,6 +236,13 @@ fn write_sarif(out: &mut dyn Write, matches: &[ScanMatch]) -> io::Result<()> {
     }
     writeln!(out, "      ]")?;
     writeln!(out, "    }}}},")?;
+
+    // invocations — captures the command line used for this scan ─────────────
+    let cmd_j = json_str(meta.command_line);
+    writeln!(out, "    \"invocations\": [{{")?;
+    writeln!(out, "      \"commandLine\": {cmd_j},")?;
+    writeln!(out, "      \"executionSuccessful\": true")?;
+    writeln!(out, "    }}],")?;
 
     // results ────────────────────────────────────────────────────────────────
     writeln!(out, "    \"results\": [")?;
@@ -335,9 +377,13 @@ mod tests {
         }
     }
 
+    fn test_meta() -> ScanMetadata<'static> {
+        ScanMetadata { configs: &[], command_line: "yarecs test" }
+    }
+
     fn collect(matches: &[ScanMatch], fmt: OutputFormat) -> String {
         let mut buf = Vec::new();
-        write_results(&mut buf, &fmt, matches).unwrap();
+        write_results(&mut buf, &fmt, matches, &test_meta()).unwrap();
         String::from_utf8(buf).unwrap()
     }
 
@@ -400,5 +446,92 @@ mod tests {
                      "message", "locations", "physicalLocation", "region", "snippet"] {
             assert!(out.contains(key), "missing key {key} in SARIF output");
         }
+    }
+
+    // ── metadata embedding tests ─────────────────────────────────────────────
+
+    #[test]
+    fn text_output_has_metadata_header() {
+        let configs = vec![PathBuf::from("rules/foo.toml"), PathBuf::from("rules/bar.toml")];
+        let meta = ScanMetadata { configs: &configs, command_line: "yarecs src/ -c rules/foo.toml" };
+        let m = make_match("x");
+        let mut buf = Vec::new();
+        write_results(&mut buf, &OutputFormat::Text, &[m], &meta).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.starts_with("yarecs scan"), "missing header: {out}");
+        assert!(out.contains("rules/foo.toml"), "config not in header: {out}");
+        assert!(out.contains("rules/bar.toml"), "second config not in header: {out}");
+        assert!(out.contains("yarecs src/ -c rules/foo.toml"), "command not in header: {out}");
+        // Matches still appear after the header
+        assert!(out.contains("src/foo.rs"), "match missing after header: {out}");
+    }
+
+    #[test]
+    fn text_output_empty_matches_still_has_header() {
+        let configs = vec![PathBuf::from("rules.toml")];
+        let meta = ScanMetadata { configs: &configs, command_line: "yarecs ." };
+        let mut buf = Vec::new();
+        write_results(&mut buf, &OutputFormat::Text, &[], &meta).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("yarecs scan"), "header missing for empty results: {out}");
+        assert!(out.contains("rules.toml"), "config missing for empty results: {out}");
+    }
+
+    #[test]
+    fn json_output_has_metadata_field() {
+        let configs = vec![PathBuf::from("rules/foo.toml")];
+        let meta = ScanMetadata { configs: &configs, command_line: "yarecs src/ -c rules/foo.toml" };
+        let m = make_match("x");
+        let mut buf = Vec::new();
+        write_results(&mut buf, &OutputFormat::Json, &[m], &meta).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("\"metadata\""), "metadata key missing: {out}");
+        assert!(out.contains("\"configs\""), "configs key missing: {out}");
+        assert!(out.contains("\"command\""), "command key missing: {out}");
+        assert!(out.contains("rules/foo.toml"), "config path missing: {out}");
+        assert!(out.contains("\"matches\""), "matches key missing: {out}");
+        // Match data still present
+        assert!(out.contains("\"rule\""), "rule field missing: {out}");
+    }
+
+    #[test]
+    fn json_metadata_command_is_escaped() {
+        // A command with backslashes (Windows paths) must be valid JSON.
+        let meta = ScanMetadata {
+            configs: &[],
+            command_line: r#"yarecs "C:\src\my project" -c rules\foo.toml"#,
+        };
+        let mut buf = Vec::new();
+        write_results(&mut buf, &OutputFormat::Json, &[], &meta).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        // No raw backslashes inside a JSON string value
+        assert!(out.contains("\\\\"), "backslash not escaped in command: {out}");
+    }
+
+    #[test]
+    fn sarif_output_has_invocations() {
+        let configs = vec![PathBuf::from("rules/foo.toml")];
+        let meta = ScanMetadata { configs: &configs, command_line: "yarecs src/ -c rules/foo.toml" };
+        let m = make_match("x");
+        let mut buf = Vec::new();
+        write_results(&mut buf, &OutputFormat::Sarif, &[m], &meta).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("\"invocations\""), "invocations missing: {out}");
+        assert!(out.contains("\"commandLine\""), "commandLine missing: {out}");
+        assert!(out.contains("\"executionSuccessful\""), "executionSuccessful missing: {out}");
+        assert!(out.contains("yarecs src/ -c rules/foo.toml"), "command text missing: {out}");
+    }
+
+    #[test]
+    fn csv_output_has_no_metadata_header() {
+        // CSV has no metadata section — header row is always the column names.
+        let configs = vec![PathBuf::from("rules.toml")];
+        let meta = ScanMetadata { configs: &configs, command_line: "yarecs ." };
+        let m = make_match("x");
+        let mut buf = Vec::new();
+        write_results(&mut buf, &OutputFormat::Csv, &[m], &meta).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.starts_with("rule,file,"), "CSV should start with column header: {out}");
+        assert!(!out.contains("yarecs scan"), "CSV must not have metadata header: {out}");
     }
 }

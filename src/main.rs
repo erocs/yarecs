@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use walkdir::WalkDir;
 
 use engine::ScanMatch;
-use output::OutputFormat;
+use output::{OutputFormat, ScanMetadata};
 use rules::{load_rules, Severity};
 use scope::{print_scope_tree, profile_for_ext, ScopeParser};
 
@@ -96,6 +96,7 @@ fn glob_match(pattern: &str, name: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 fn main() -> Result<()> {
+    let command_line = std::env::args().collect::<Vec<_>>().join(" ");
     let args = Args::parse();
 
     let extensions: Vec<&str> = args.extensions.split(',').map(str::trim).collect();
@@ -179,13 +180,15 @@ fn main() -> Result<()> {
     }
 
     if !args.dump_scopes {
+        let meta = ScanMetadata { configs: &args.config, command_line: &command_line };
+
         // Open output destination: a file if --output was given, otherwise stdout.
         if let Some(ref out_path) = args.output {
             let file = std::fs::File::create(out_path)
                 .with_context(|| format!("cannot create output file {}", out_path.display()))?;
-            output::write_results(&mut BufWriter::new(file), &args.format, &all_matches)?;
+            output::write_results(&mut BufWriter::new(file), &args.format, &all_matches, &meta)?;
         } else {
-            output::write_results(&mut BufWriter::new(io::stdout()), &args.format, &all_matches)?;
+            output::write_results(&mut BufWriter::new(io::stdout()), &args.format, &all_matches, &meta)?;
         }
 
         let errors = all_matches.iter().filter(|m| m.severity == Severity::Error).count();
