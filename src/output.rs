@@ -185,11 +185,18 @@ fn write_json(out: &mut dyn Write, matches: &[ScanMatch], meta: &ScanMetadata) -
 // ---------------------------------------------------------------------------
 
 fn write_csv(out: &mut dyn Write, matches: &[ScanMatch]) -> io::Result<()> {
-    writeln!(out, "rule,file,line,col,severity,scope,context,message,match,snippet")?;
+    writeln!(out, "rule,file,line,col,severity,scope,context,message,match,snippet,ai_verdict,ai_reasoning")?;
     for m in matches {
+        let (ai_verdict, ai_reasoning) = match &m.ai_verdict {
+            Some(v) => (
+                if v.is_false_positive { "false_positive" } else { "confirmed" },
+                v.reasoning.as_str(),
+            ),
+            None => ("", ""),
+        };
         writeln!(
             out,
-            "{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{}",
             csv_field(&m.rule_name),
             csv_field(&m.file.to_string_lossy()),
             m.line,
@@ -200,6 +207,8 @@ fn write_csv(out: &mut dyn Write, matches: &[ScanMatch]) -> io::Result<()> {
             csv_field(&m.message),
             csv_field(&m.matched_text),
             csv_field(&m.snippet),
+            csv_field(ai_verdict),
+            csv_field(ai_reasoning),
         )?;
     }
     Ok(())
@@ -269,7 +278,22 @@ fn write_sarif(out: &mut dyn Write, matches: &[ScanMatch], meta: &ScanMetadata) 
         };
         // Combine message + scope + context into a single human-readable string
         // so SARIF viewers surface everything without needing custom columns.
-        let full_msg = format!("{} [{}]{}", m.message, scope, ctx_suffix);
+        let ai_suffix = match &m.ai_verdict {
+            Some(v) => {
+                let label = if v.is_false_positive { "FALSE POSITIVE" } else { "CONFIRMED" };
+                format!(" [AI: {} \u{2014} {}]", label, v.reasoning)
+            }
+            None => String::new(),
+        };
+        let full_msg = format!("{} [{}]{}{}", m.message, scope, ctx_suffix, ai_suffix);
+        let props = match &m.ai_verdict {
+            Some(v) => format!(
+                ", \"properties\": {{\"ai_false_positive\": {}, \"ai_reasoning\": {}}}",
+                v.is_false_positive,
+                json_str(&v.reasoning)
+            ),
+            None => String::new(),
+        };
         let uri = sarif_uri(&m.file);
         let rule_id  = json_str(&m.rule_name);
         let msg_j    = json_str(&full_msg);
@@ -280,7 +304,7 @@ fn write_sarif(out: &mut dyn Write, matches: &[ScanMatch], meta: &ScanMetadata) 
              \"message\": {{\"text\": {msg_j}}}, \
              \"locations\": [{{\"physicalLocation\": {{\"artifactLocation\": \
              {{\"uri\": {uri_j}}}, \"region\": {{\"startLine\": {}, \
-             \"startColumn\": {}, \"snippet\": {{\"text\": {snippet_j}}}}}}}}}]}}{comma}",
+             \"startColumn\": {}, \"snippet\": {{\"text\": {snippet_j}}}}}}}}}]{props}}}{comma}",
             sarif_level(&m.severity), m.line, m.column,
         )?;
     }
@@ -535,6 +559,77 @@ mod tests {
         assert!(out.contains("\"commandLine\""), "commandLine missing: {out}");
         assert!(out.contains("\"executionSuccessful\""), "executionSuccessful missing: {out}");
         assert!(out.contains("yarecs src/ -c rules/foo.toml"), "command text missing: {out}");
+    }
+
+    fn make_match_with_verdict(snippet: &str, is_fp: bool, reasoning: &str) -> ScanMatch {
+        use crate::engine::AiVerdict;
+        let mut m = make_match(snippet);
+        m.ai_verdict = Some(AiVerdict { is_false_positive: is_fp, reasoning: reasoning.to_string() });
+        m
+    }
+
+    // ── AI verdict in CSV ────────────────────────────────────────────────────
+
+    #[test]
+    fn csv_output_includes_ai_verdict_columns_in_header() {
+        let m = make_match("x");
+        let out = collect(&[m], OutputFormat::Csv);
+        assert!(out.starts_with("rule,file,line,col,severity,scope,context,message,match,snippet,ai_verdict,ai_reasoning"),
+            "header missing ai columns: {out}");
+    }
+
+    #[test]
+    fn csv_output_false_positive_verdict() {
+        let m = make_match_with_verdict("x", true, "benign usage");
+        let out = collect(&[m], OutputFormat::Csv);
+        assert!(out.contains("false_positive"), "verdict label missing: {out}");
+        assert!(out.contains("benign usage"), "reasoning missing: {out}");
+    }
+
+    #[test]
+    fn csv_output_confirmed_verdict() {
+        let m = make_match_with_verdict("x", false, "real issue");
+        let out = collect(&[m], OutputFormat::Csv);
+        assert!(out.contains("confirmed"), "verdict label missing: {out}");
+        assert!(out.contains("real issue"), "reasoning missing: {out}");
+    }
+
+    #[test]
+    fn csv_output_no_verdict_has_empty_ai_columns() {
+        let m = make_match("x");
+        let out = collect(&[m], OutputFormat::Csv);
+        // Data row ends with two empty comma-separated fields
+        assert!(out.contains(",,\n") || out.ends_with(",,\n") || out.contains(",,,"),
+            "empty ai columns not present: {out}");
+    }
+
+    // ── AI verdict in SARIF ──────────────────────────────────────────────────
+
+    #[test]
+    fn sarif_output_ai_verdict_in_message_and_properties() {
+        let m = make_match_with_verdict("x", true, "benign usage");
+        let out = collect(&[m], OutputFormat::Sarif);
+        assert!(out.contains("FALSE POSITIVE"), "AI label missing from message: {out}");
+        assert!(out.contains("benign usage"), "reasoning missing: {out}");
+        assert!(out.contains("\"ai_false_positive\": true"), "properties missing: {out}");
+        assert!(out.contains("\"ai_reasoning\""), "ai_reasoning key missing: {out}");
+    }
+
+    #[test]
+    fn sarif_output_confirmed_verdict_in_message_and_properties() {
+        let m = make_match_with_verdict("x", false, "real issue");
+        let out = collect(&[m], OutputFormat::Sarif);
+        assert!(out.contains("CONFIRMED"), "AI label missing from message: {out}");
+        assert!(out.contains("real issue"), "reasoning missing: {out}");
+        assert!(out.contains("\"ai_false_positive\": false"), "properties missing: {out}");
+    }
+
+    #[test]
+    fn sarif_output_no_verdict_has_no_properties() {
+        let m = make_match("x");
+        let out = collect(&[m], OutputFormat::Sarif);
+        assert!(!out.contains("\"properties\""), "unexpected properties in output: {out}");
+        assert!(!out.contains("ai_false_positive"), "unexpected ai field: {out}");
     }
 
     #[test]
