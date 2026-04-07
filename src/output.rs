@@ -93,6 +93,10 @@ fn write_text(out: &mut dyn Write, matches: &[ScanMatch], meta: &ScanMetadata) -
         // Indent every line of the snippet (multiline matches span several lines).
         let indented = m.snippet.replace('\n', "\n  ");
         writeln!(out, "  {}", indented)?;
+        if let Some(ref v) = m.ai_verdict {
+            let label = if v.is_false_positive { "FALSE POSITIVE" } else { "CONFIRMED" };
+            writeln!(out, "  [AI: {} \u{2014} {}]", label, v.reasoning)?;
+        }
     }
     Ok(())
 }
@@ -153,11 +157,20 @@ fn write_json(out: &mut dyn Write, matches: &[ScanMatch], meta: &ScanMetadata) -
         let msg  = json_str(&m.message);
         let mat  = json_str(&m.matched_text);
         let snip = json_str(&m.snippet);
+        let ai = match &m.ai_verdict {
+            Some(v) => format!(
+                "{{\"is_false_positive\":{},\"reasoning\":{}}}",
+                v.is_false_positive,
+                json_str(&v.reasoning)
+            ),
+            None => "null".to_string(),
+        };
         writeln!(
             out,
             "    {{\"rule\":{r},\"file\":{f},\"line\":{l},\"col\":{c},\
              \"scope\":{s},\"severity\":{sev},\"context\":{ctx},\
-             \"message\":{msg},\"match\":{mat},\"snippet\":{snip}}}{comma}",
+             \"message\":{msg},\"match\":{mat},\"snippet\":{snip},\
+             \"ai_verdict\":{ai}}}{comma}",
             l = m.line,
             c = m.column,
         )?;
@@ -374,6 +387,7 @@ mod tests {
             message:      "msg".to_string(),
             severity:     Severity::Warning,
             context:      MatchContext::Code,
+            ai_verdict:   None,
         }
     }
 

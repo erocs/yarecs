@@ -1,0 +1,131 @@
+//! Optional AI false-positive classifier.
+//!
+//! When the user supplies `--ai-config <path>`, each `ScanMatch` is sent to an
+//! OpenAI-compatible `/v1/chat/completions` endpoint and classified as a genuine
+//! finding or a false positive.  The result is stored in `ScanMatch::ai_verdict`.
+//!
+//! Configuration is read from a TOML file so credentials are never typed on the
+//! command line (and therefore never appear in shell history or process listings).
+//!
+//! Example config file (`ai.toml`):
+//! ```toml
+//! endpoint = "https://api.openai.com/v1"
+//! api_key  = "sk-..."
+//! model    = "gpt-4o-mini"
+//! # prompt = "optional system prompt override"
+//! ```
+
+use anyhow::{Context, Result};
+use serde::Deserialize;
+use std::path::Path;
+
+use crate::engine::{AiVerdict, ScanMatch};
+
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
+/// Loaded from the file passed to `--ai-config`.
+#[derive(Deserialize)]
+pub struct AiConfig {
+    /// Base URL of an OpenAI-compatible API, e.g. `https://api.openai.com/v1`.
+    /// The path `/chat/completions` is appended automatically.
+    pub endpoint: String,
+    pub api_key:  String,
+    pub model:    String,
+    /// Override the built-in system prompt.  Useful for project-specific tuning.
+    pub prompt:   Option<String>,
+}
+
+pub fn load_ai_config(path: &Path) -> Result<AiConfig> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("cannot read AI config {}", path.display()))?;
+    toml::from_str(&text)
+        .with_context(|| format!("invalid AI config {}", path.display()))
+}
+
+// ---------------------------------------------------------------------------
+// Default system prompt
+// ---------------------------------------------------------------------------
+
+const DEFAULT_SYSTEM: &str = "\
+You are a senior security code reviewer. \
+You will be given a static analysis finding and the surrounding source code. \
+Determine whether the finding is a genuine security concern or a false positive. \
+Respond ONLY with a JSON object — no markdown fences, no explanation outside the JSON — \
+in exactly this format:\n\
+{\"is_false_positive\": <true|false>, \"reasoning\": \"<one sentence>\"}";
+
+// ---------------------------------------------------------------------------
+// Classification
+// ---------------------------------------------------------------------------
+
+/// Send a single `ScanMatch` to the configured AI model and return its verdict.
+///
+/// On network or parsing failure the caller should log a warning and keep the
+/// match with `ai_verdict: None` rather than aborting the entire scan.
+pub fn classify_match(config: &AiConfig, m: &ScanMatch) -> Result<AiVerdict> {
+    let scope = if m.scope_path.is_empty() {
+        "(file root)".to_string()
+    } else {
+        m.scope_path.join("::")
+    };
+
+    let user_msg = format!(
+        "Rule: {}\nMessage: {}\nSeverity: {:?}\nFile: {}\nScope: {}\nLine: {}\n\n\
+         Matched text: {}\n\nSnippet:\n{}",
+        m.rule_name,
+        m.message,
+        m.severity,
+        m.file.display(),
+        scope,
+        m.line,
+        m.matched_text,
+        m.snippet,
+    );
+
+    let system = config.prompt.as_deref().unwrap_or(DEFAULT_SYSTEM);
+    let url = format!("{}/chat/completions", config.endpoint.trim_end_matches('/'));
+
+    let body = serde_json::json!({
+        "model": config.model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user",   "content": user_msg}
+        ],
+        "temperature": 0
+    });
+
+    let resp: serde_json::Value = ureq::post(&url)
+        .set("Authorization", &format!("Bearer {}", config.api_key))
+        .set("Content-Type", "application/json")
+        .send_json(body)
+        .context("AI API request failed")?
+        .into_json()
+        .context("AI API response was not valid JSON")?;
+
+    let content = resp["choices"][0]["message"]["content"]
+        .as_str()
+        .context("unexpected AI response shape")?;
+
+    // Strip optional markdown code fences the model may wrap around the JSON.
+    let content = content
+        .trim()
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(content).context("AI response was not parseable JSON")?;
+
+    let is_fp = parsed["is_false_positive"]
+        .as_bool()
+        .context("AI JSON missing 'is_false_positive' bool")?;
+    let reasoning = parsed["reasoning"]
+        .as_str()
+        .unwrap_or("(no reasoning provided)")
+        .to_string();
+
+    Ok(AiVerdict { is_false_positive: is_fp, reasoning })
+}

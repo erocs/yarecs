@@ -1,3 +1,4 @@
+mod ai_filter;
 mod engine;
 mod lexer;
 mod output;
@@ -63,6 +64,17 @@ struct Args {
     /// Files that cannot be read as UTF-8 are still skipped with a warning.
     #[arg(long)]
     all_files: bool,
+
+    /// Path to an AI config TOML file containing `endpoint`, `api_key`, `model`,
+    /// and an optional `prompt` override.  When provided, each finding is sent to
+    /// the AI model for false-positive classification.
+    #[arg(long)]
+    ai_config: Option<PathBuf>,
+
+    /// Drop findings that the AI classifies as false positives (requires --ai-config).
+    /// Without this flag, all findings are shown but annotated with the AI verdict.
+    #[arg(long)]
+    ai_filter: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -176,6 +188,30 @@ fn main() -> Result<()> {
             let file_matches = engine::scan_file(source, path, &tree, &rules, &lex);
             all_matches.extend(file_matches);
             file_count += 1;
+        }
+    }
+
+    // ── Optional AI classification ───────────────────────────────────────────
+    if let Some(ref ai_path) = args.ai_config {
+        let ai_cfg = ai_filter::load_ai_config(ai_path)?;
+        let total = all_matches.len();
+        eprintln!("Running AI classification on {} finding(s)…", total);
+        for (i, m) in all_matches.iter_mut().enumerate() {
+            eprint!("  [{}/{}] {}:{} … ", i + 1, total, m.file.display(), m.line);
+            match ai_filter::classify_match(&ai_cfg, m) {
+                Ok(verdict) => {
+                    let label = if verdict.is_false_positive { "false positive" } else { "confirmed" };
+                    eprintln!("{}", label);
+                    m.ai_verdict = Some(verdict);
+                }
+                Err(e) => {
+                    eprintln!("AI error: {:#}", e);
+                    // ai_verdict stays None; match is retained
+                }
+            }
+        }
+        if args.ai_filter {
+            all_matches.retain(|m| m.ai_verdict.as_ref().map_or(true, |v| !v.is_false_positive));
         }
     }
 

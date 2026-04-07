@@ -68,6 +68,13 @@ impl std::fmt::Display for MatchContext {
 // Match result
 // ---------------------------------------------------------------------------
 
+/// Verdict returned by the optional AI false-positive classifier.
+#[derive(Debug, Clone)]
+pub struct AiVerdict {
+    pub is_false_positive: bool,
+    pub reasoning: String,
+}
+
 /// A single rule match emitted by the engine.
 #[derive(Debug)]
 pub struct ScanMatch {
@@ -89,6 +96,8 @@ pub struct ScanMatch {
     pub severity: Severity,
     /// Whether the match was found in code, a comment, or a string literal.
     pub context: MatchContext,
+    /// Verdict from the optional AI false-positive classifier; `None` if AI was not run.
+    pub ai_verdict: Option<AiVerdict>,
 }
 
 // ---------------------------------------------------------------------------
@@ -378,6 +387,7 @@ fn emit_match(
         message: rule.message.clone(),
         severity: rule.severity.clone(),
         context,
+        ai_verdict: None,
     });
 }
 
