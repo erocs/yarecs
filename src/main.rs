@@ -195,8 +195,16 @@ fn main() -> Result<()> {
     if let Some(ref ai_path) = args.ai_config {
         let ai_cfg = ai_filter::load_ai_config(ai_path)?;
         let total = all_matches.len();
+        let rate_delay = ai_cfg.rate_limit_secs
+            .filter(|&s| s > 0.0)
+            .map(std::time::Duration::from_secs_f64);
         eprintln!("Running AI classification on {} finding(s)…", total);
         for (i, m) in all_matches.iter_mut().enumerate() {
+            if i > 0 {
+                if let Some(delay) = rate_delay {
+                    std::thread::sleep(delay);
+                }
+            }
             eprint!("  [{}/{}] {}:{} … ", i + 1, total, m.file.display(), m.line);
             match ai_filter::classify_match(&ai_cfg, m) {
                 Ok(verdict) => {

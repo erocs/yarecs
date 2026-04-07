@@ -9,10 +9,11 @@
 //!
 //! Example config file (`ai.toml`):
 //! ```toml
-//! endpoint = "https://api.openai.com/v1"
-//! api_key  = "sk-..."
-//! model    = "gpt-4o-mini"
-//! # prompt = "optional system prompt override"
+//! endpoint        = "https://api.openai.com/v1"
+//! api_key         = "sk-..."
+//! model           = "gpt-4o-mini"
+//! # rate_limit_secs = 1.0   # seconds to wait between requests (fractional OK)
+//! # prompt          = "optional system prompt override"
 //! ```
 
 use anyhow::{Context, Result};
@@ -33,8 +34,11 @@ pub struct AiConfig {
     pub endpoint: String,
     pub api_key:  String,
     pub model:    String,
+    /// Seconds to wait between successive AI requests (fractional values allowed).
+    /// Useful for staying within provider rate limits.  Defaults to no delay.
+    pub rate_limit_secs: Option<f64>,
     /// Override the built-in system prompt.  Useful for project-specific tuning.
-    pub prompt:   Option<String>,
+    pub prompt:          Option<String>,
 }
 
 pub fn load_ai_config(path: &Path) -> Result<AiConfig> {
