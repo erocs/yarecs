@@ -384,6 +384,7 @@ mod tests {
             scope_path:   vec![],
             matched_text: "match".to_string(),
             snippet:      snippet.to_string(),
+            ai_snippet:   String::new(),
             message:      "msg".to_string(),
             severity:     Severity::Warning,
             context:      MatchContext::Code,

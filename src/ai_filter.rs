@@ -13,7 +13,7 @@
 //! api_key         = "sk-..."
 //! model           = "gpt-4o-mini"
 //! # rate_limit_secs = 1.0   # seconds to wait between requests (fractional OK)
-//! # prompt          = "optional system prompt override"
+//! # prompt          = "Focus on Unreal Engine 5 server-side security context."  # appended to built-in prompt
 //! ```
 
 use anyhow::{Context, Result};
@@ -37,7 +37,9 @@ pub struct AiConfig {
     /// Seconds to wait between successive AI requests (fractional values allowed).
     /// Useful for staying within provider rate limits.  Defaults to no delay.
     pub rate_limit_secs: Option<f64>,
-    /// Override the built-in system prompt.  Useful for project-specific tuning.
+    /// Additional instructions appended to the built-in system prompt.
+    /// The JSON response format requirement is always enforced by the built-in
+    /// prompt regardless of what is supplied here.
     pub prompt:          Option<String>,
 }
 
@@ -69,26 +71,23 @@ in exactly this format:\n\
 /// On network or parsing failure the caller should log a warning and keep the
 /// match with `ai_verdict: None` rather than aborting the entire scan.
 pub fn classify_match(config: &AiConfig, m: &ScanMatch) -> Result<AiVerdict> {
-    let scope = if m.scope_path.is_empty() {
-        "(file root)".to_string()
-    } else {
-        m.scope_path.join("::")
-    };
-
     let user_msg = format!(
-        "Rule: {}\nMessage: {}\nSeverity: {:?}\nFile: {}\nScope: {}\nLine: {}\n\n\
-         Matched text: {}\n\nSnippet:\n{}",
+        "Rule: {}\nMessage: {}\nSeverity: {:?}\n\nMatched text: {}\n\nSnippet:\n{}",
         m.rule_name,
         m.message,
         m.severity,
-        m.file.display(),
-        scope,
-        m.line,
         m.matched_text,
-        m.snippet,
+        m.ai_snippet,
     );
 
-    let system = config.prompt.as_deref().unwrap_or(DEFAULT_SYSTEM);
+    let system_buf;
+    let system = match config.prompt.as_deref() {
+        None        => DEFAULT_SYSTEM,
+        Some(extra) => {
+            system_buf = format!("{DEFAULT_SYSTEM}\n\n{extra}");
+            &system_buf
+        }
+    };
     let url = format!("{}/chat/completions", config.endpoint.trim_end_matches('/'));
 
     let body = serde_json::json!({

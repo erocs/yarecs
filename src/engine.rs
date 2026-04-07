@@ -92,6 +92,10 @@ pub struct ScanMatch {
     /// The full source line containing the match, whitespace-trimmed.
     /// Provides immediate context without requiring a separate file read.
     pub snippet: String,
+    /// Richer context for the AI classifier: the enclosing method body (from
+    /// declaration header to closing brace), or 10 lines either side when the
+    /// match is not inside a function.  Always bounded by [`AI_SNIPPET_MAX`].
+    pub ai_snippet: String,
     pub message: String,
     pub severity: Severity,
     /// Whether the match was found in code, a comment, or a string literal.
@@ -215,6 +219,8 @@ fn search_scope<'tree>(
                     if chain_satisfied(source, abs, abs + m.len(), &body, &rule.chain, current_node, ancestors, lex) {
                         let ctx = classify_position(abs, &lex.comment_ranges, &lex.string_ranges);
                         emit_match(source, path, abs, m.len(), ctx, rule, scope_path, out);
+                        out.last_mut().unwrap().ai_snippet =
+                            extract_ai_snippet(source, abs, m.len(), current_node, ancestors);
                     }
                 }
                 true
@@ -229,6 +235,8 @@ fn search_scope<'tree>(
                     if seen.insert(abs) {
                         if chain_satisfied(source, abs, abs + m.len(), &body, &rule.chain, current_node, ancestors, lex) {
                             emit_match(source, path, abs, m.len(), MatchContext::Comment, rule, scope_path, out);
+                            out.last_mut().unwrap().ai_snippet =
+                                extract_ai_snippet(source, abs, m.len(), current_node, ancestors);
                         }
                     }
                     true
@@ -244,6 +252,8 @@ fn search_scope<'tree>(
                     if seen.insert(abs) {
                         if chain_satisfied(source, abs, abs + m.len(), &body, &rule.chain, current_node, ancestors, lex) {
                             emit_match(source, path, abs, m.len(), MatchContext::Code, rule, scope_path, out);
+                            out.last_mut().unwrap().ai_snippet =
+                                extract_ai_snippet(source, abs, m.len(), current_node, ancestors);
                         }
                     }
                     true
@@ -384,6 +394,7 @@ fn emit_match(
         scope_path: scope_path.to_vec(),
         matched_text: source[abs..abs + len].to_string(),
         snippet: extract_snippet(source, abs, len),
+        ai_snippet: String::new(),
         message: rule.message.clone(),
         severity: rule.severity.clone(),
         context,
@@ -430,6 +441,112 @@ fn extract_snippet(source: &str, byte_pos: usize, match_len: usize) -> String {
     let prefix = if win_start > 0 { "…" } else { "" };
     let suffix = if win_end < raw.len() { "…" } else { "" };
     format!("{}{}{}", prefix, &raw[win_start..win_end], suffix)
+}
+
+/// Maximum byte size of an AI snippet (shared with `extract_snippet`'s limit).
+pub const AI_SNIPPET_MAX: usize = 2048;
+
+/// Build the richer context snippet sent to the AI classifier.
+///
+/// * **Inside a function**: the full method from its declaration header to its
+///   closing `}`.  When that exceeds [`AI_SNIPPET_MAX`], the text is kept from
+///   the start (preserving the signature and code leading up to the match) and
+///   truncated after with `…`.  If the match itself is beyond the budget, a
+///   window ending at the match is used instead.
+/// * **Outside any function**: 10 source lines before and after the match.
+fn extract_ai_snippet(
+    source: &str,
+    byte_pos: usize,
+    match_len: usize,
+    current_node: &ScopeNode,
+    ancestors: &[&ScopeNode],
+) -> String {
+    const CONTEXT_LINES: usize = 10;
+    let match_end = (byte_pos + match_len).min(source.len());
+
+    if let Some(fn_node) = nearest_of_kind(ancestors, current_node, &[ScopeKind::Function]) {
+        let decl_start = find_decl_start(source, fn_node.body_start);
+        // Include the closing `}` (body_end is its byte offset).
+        let fn_end = (fn_node.body_end + 1).min(source.len());
+        let raw = &source[decl_start..fn_end];
+
+        if raw.len() <= AI_SNIPPET_MAX {
+            return raw.trim().to_string();
+        }
+
+        // Prefer keeping from the start through the match; truncate from the end.
+        let rel_match_end = match_end.saturating_sub(decl_start).min(raw.len());
+        if rel_match_end >= AI_SNIPPET_MAX {
+            // The match itself is beyond the budget — anchor to match_end instead.
+            let take_from = rel_match_end - AI_SNIPPET_MAX;
+            let take_from = (0..=take_from).rev()
+                .find(|&i| raw.is_char_boundary(i))
+                .unwrap_or(0);
+            return format!("…{}", raw[take_from..rel_match_end].trim_start());
+        }
+
+        // Start fits; fill remaining budget after the match.
+        let take_to = AI_SNIPPET_MAX.min(raw.len());
+        let take_to = (take_to..=raw.len())
+            .find(|&i| raw.is_char_boundary(i))
+            .unwrap_or(raw.len());
+        let suffix = if take_to < raw.len() { "…" } else { "" };
+        format!("{}{}", raw[..take_to].trim_end(), suffix)
+    } else {
+        // Not inside a function — provide N lines on either side.
+        lines_around(source, byte_pos, match_end, CONTEXT_LINES)
+    }
+}
+
+/// Return `n` source lines before `byte_pos` and `n` lines after `match_end`,
+/// whitespace-trimmed.
+fn lines_around(source: &str, byte_pos: usize, match_end: usize, n: usize) -> String {
+    // Walk backward n newlines from the start of the matched line.
+    let mut start = source[..byte_pos].rfind('\n').map_or(0, |i| i + 1);
+    let mut count = 0;
+    while count < n && start > 0 {
+        start -= 1; // step onto the preceding '\n'
+        match source[..start].rfind('\n') {
+            Some(i) => { start = i + 1; }
+            None    => { start = 0; }
+        }
+        count += 1;
+    }
+
+    // Walk forward n newlines from the end of the matched line.
+    let line_end = source[match_end..].find('\n')
+        .map_or(source.len(), |i| match_end + i + 1);
+    let mut end = line_end;
+    let mut count = 0;
+    while count < n && end < source.len() {
+        match source[end..].find('\n') {
+            Some(i) => { end += i + 1; }
+            None    => { end = source.len(); break; }
+        }
+        count += 1;
+    }
+
+    source[start..end].trim().to_string()
+}
+
+/// Find where the declaration for a scope whose body starts at `body_start`
+/// begins, by scanning backward (up to 512 bytes) for a `}` or `;` that ends
+/// the previous declaration.  Returns the byte offset of the first
+/// non-whitespace character of the declaration header.
+fn find_decl_start(source: &str, body_start: usize) -> usize {
+    let scan_limit = body_start.saturating_sub(512);
+    let before = &source[scan_limit..body_start];
+    for (i, c) in before.char_indices().rev() {
+        if c == '}' || c == ';' {
+            let after_delim = scan_limit + i + c.len_utf8();
+            let ws = source[after_delim..body_start].len()
+                - source[after_delim..body_start].trim_start().len();
+            return after_delim + ws;
+        }
+    }
+    // No delimiter — start from the scan window, skipping leading whitespace.
+    let ws = before.len() - before.trim_start().len();
+    scan_limit + ws
 }
 
 /// Determine whether byte `pos` falls inside a comment, a string literal, or plain code.
@@ -1666,5 +1783,128 @@ public:
         assert!(!snip.starts_with('…'), "should not trim a line under threshold");
         assert!(!snip.ends_with('…'), "should not trim a line under threshold");
         assert!(snip.contains("NEEDLE"));
+    }
+
+    // -----------------------------------------------------------------------
+    // AI snippet tests
+    // -----------------------------------------------------------------------
+
+    /// Match inside a method: ai_snippet contains the function signature and body.
+    #[test]
+    fn ai_snippet_inside_function_includes_signature() {
+        let src = "class Foo {\n    int bar() {\n        return NEEDLE();\n    }\n};\n";
+        let ms = run_single(src, "Foo::bar", "NEEDLE");
+        assert_eq!(ms.len(), 1);
+        let snip = &ms[0].ai_snippet;
+        assert!(snip.contains("int bar()"), "ai_snippet should include function signature: {snip}");
+        assert!(snip.contains("NEEDLE"),    "ai_snippet should include the match: {snip}");
+        assert!(snip.contains('{'),         "ai_snippet should include opening brace: {snip}");
+        assert!(snip.contains('}'),         "ai_snippet should include closing brace: {snip}");
+        assert!(!snip.starts_with('…'),     "ai_snippet should not be truncated: {snip}");
+    }
+
+    /// Match at class scope (not inside a function): ai_snippet uses lines_around.
+    #[test]
+    fn ai_snippet_outside_function_uses_lines_around() {
+        // NEEDLE is a field at class scope, not inside a method.
+        let src = "class Foo {\n    int NEEDLE;\n    void bar() {}\n};\n";
+        let ms = run_single(src, "Foo", "NEEDLE");
+        assert_eq!(ms.len(), 1);
+        let snip = &ms[0].ai_snippet;
+        assert!(snip.contains("NEEDLE"), "ai_snippet should include the match: {snip}");
+        // Should not include the whole file — just nearby lines.
+        assert!(!snip.is_empty(), "ai_snippet should not be empty");
+    }
+
+    /// Large function body: truncated from the end, signature and match preserved.
+    #[test]
+    fn ai_snippet_large_function_truncated_from_end() {
+        let filler = "x".repeat(2500);
+        let src = format!(
+            "class F {{\n    void g() {{\n        NEEDLE();\n        // {filler}\n    }}\n}};\n"
+        );
+        let ms = run_single(&src, "F::g", "NEEDLE");
+        assert_eq!(ms.len(), 1);
+        let snip = &ms[0].ai_snippet;
+        // '…' is a 3-byte UTF-8 sequence so allow a little slack.
+        assert!(snip.len() <= AI_SNIPPET_MAX + 4,
+                "ai_snippet exceeds limit ({} bytes)", snip.len());
+        assert!(snip.contains("void g()"), "ai_snippet should include signature: {snip:.80}");
+        assert!(snip.contains("NEEDLE"),   "ai_snippet should include match: {snip:.80}");
+        assert!(snip.ends_with('…'),       "ai_snippet should be truncated at end: {snip:.80}");
+        assert!(!snip.starts_with('…'),    "ai_snippet should not be truncated at start: {snip:.80}");
+    }
+
+    /// When start-to-match exceeds the budget, snippet is anchored to the match
+    /// with a leading ellipsis.
+    #[test]
+    fn ai_snippet_match_beyond_budget_anchors_to_match() {
+        // ~3 KB of filler lines before NEEDLE inside the function.
+        let filler_line = format!("        // {}\n", "y".repeat(100));
+        let preamble = filler_line.repeat(30);
+        let src = format!(
+            "class F {{\n    void g() {{\n{preamble}        NEEDLE();\n    }}\n}};\n"
+        );
+        let ms = run_single(&src, "F::g", "NEEDLE");
+        assert_eq!(ms.len(), 1);
+        let snip = &ms[0].ai_snippet;
+        assert!(snip.len() <= AI_SNIPPET_MAX + 4,
+                "ai_snippet exceeds limit ({} bytes)", snip.len());
+        assert!(snip.contains("NEEDLE"),  "ai_snippet should include the match: {snip:.80}");
+        assert!(snip.starts_with('…'),    "ai_snippet should have leading ellipsis: {snip:.80}");
+    }
+
+    /// find_decl_start: stops at the closing `}` of the previous declaration.
+    #[test]
+    fn find_decl_start_skips_past_closing_brace() {
+        let src = "void prev() { }\n\nvoid next() {";
+        let body_start = src.rfind('{').unwrap();
+        let decl_start = find_decl_start(src, body_start);
+        assert_eq!(src[decl_start..body_start].trim(), "void next()",
+                   "should identify 'void next()' as the declaration header");
+    }
+
+    /// find_decl_start: stops at the `;` of the previous statement.
+    #[test]
+    fn find_decl_start_skips_past_semicolon() {
+        let src = "int x = 0;\nvoid foo() {";
+        let body_start = src.rfind('{').unwrap();
+        let decl_start = find_decl_start(src, body_start);
+        assert_eq!(src[decl_start..body_start].trim(), "void foo()",
+                   "should identify 'void foo()' after the semicolon");
+    }
+
+    /// find_decl_start: no prior delimiter — returns the file start.
+    #[test]
+    fn find_decl_start_at_file_start() {
+        let src = "void only() {";
+        let body_start = src.rfind('{').unwrap();
+        let decl_start = find_decl_start(src, body_start);
+        assert_eq!(src[decl_start..body_start].trim(), "void only()");
+    }
+
+    /// lines_around: returns the matched line plus N lines on each side.
+    #[test]
+    fn lines_around_returns_correct_window() {
+        let src = "line1\nline2\nline3\nNEEDLE\nline5\nline6\nline7\n";
+        let byte_pos  = src.find("NEEDLE").unwrap();
+        let match_end = byte_pos + "NEEDLE".len();
+        let result = lines_around(src, byte_pos, match_end, 2);
+        assert!(result.contains("line2"),  "should include 2 lines before: {result}");
+        assert!(result.contains("NEEDLE"), "should include matched line: {result}");
+        assert!(result.contains("line6"),  "should include 2 lines after: {result}");
+        assert!(!result.contains("line1"), "should not include line beyond window: {result}");
+        assert!(!result.contains("line7"), "should not include line beyond window: {result}");
+    }
+
+    /// lines_around: clamps gracefully when fewer than N lines exist before/after.
+    #[test]
+    fn lines_around_clamps_at_file_edges() {
+        let src = "NEEDLE\nonly_after\n";
+        let byte_pos  = 0;
+        let match_end = "NEEDLE".len();
+        let result = lines_around(src, byte_pos, match_end, 5);
+        assert!(result.contains("NEEDLE"),     "should include match: {result}");
+        assert!(result.contains("only_after"), "should include line after: {result}");
     }
 }
