@@ -168,3 +168,48 @@ miss = 'vm := goja.New()'
 rule = "go_libxml2_xxe"
 hit  = 'doc, err := parser.ParseString(xml, parser.XMLParseNoEnt)'
 miss = 'doc, err := parser.ParseString(xml, parser.XMLParseNoNet)'
+
+[[case]]
+rule = "go_tls_skip_verify"
+hit  = 'cfg := &tls.Config{InsecureSkipVerify: true}'
+miss = 'cfg := &tls.Config{InsecureSkipVerify: false}'
+
+[[case]]
+rule = "go_http_server_no_timeout"
+hit  = 'func run() { srv := &http.Server{Addr: ":8080"} }'
+miss = 'func run() { srv := &http.Server{Addr: ":8080", ReadTimeout: 30 * time.Second} }'
+
+[[case]]
+rule = "go_rsa_pkcs1v15"
+hit  = 'pt, err := rsa.DecryptPKCS1v15(rand.Reader, priv, ct)'
+miss = 'pt, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, priv, ct, nil)'
+
+[[case]]
+rule = "go_rsa_weak_key_size"
+hit  = 'key, err := rsa.GenerateKey(rand.Reader, 1024)'
+miss = 'key, err := rsa.GenerateKey(rand.Reader, 4096)'
+
+[[case]]
+rule = "go_ecdh_p224"
+hit  = 'curve := elliptic.P224()'
+miss = 'curve := elliptic.P256()'
+
+[[case]]
+rule = "go_cors_wildcard"
+hit  = 'w.Header().Set("Access-Control-Allow-Origin", "*")'
+miss = 'w.Header().Set("Access-Control-Allow-Origin", origin)'
+
+[[case]]
+rule = "go_file_perm_world_write"
+hit  = 'os.WriteFile(path, data, 0666)'
+miss = 'os.WriteFile(path, data, 0600)'
+
+[[case]]
+rule = "go_bcrypt_weak_cost"
+hit  = 'hash, err := bcrypt.GenerateFromPassword(pwd, 4)'
+miss = 'hash, err := bcrypt.GenerateFromPassword(pwd, 12)'
+
+[[case]]
+rule = "go_fmt_sql_injection"
+hit  = 'func f() { q := fmt.Sprintf("SELECT * FROM users WHERE id = %d", id) }'
+miss = 'func f() { s := fmt.Sprintf("processed %d requests", n) }'

@@ -126,6 +126,17 @@ search   = "code"
 severity = "info"
 message  = "tls.Config — verify MinVersion: tls.VersionTLS13 is set; omitting it allows legacy TLS versions"
 
+# InsecureSkipVerify: true disables both certificate chain validation and hostname
+# verification, making every TLS connection trivially vulnerable to MITM attacks.
+# Remove the field entirely or set it to false.
+[[rules]]
+name     = "go_tls_skip_verify"
+pattern  = 'InsecureSkipVerify\s*:\s*true'
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "InsecureSkipVerify: true — disables TLS certificate and hostname validation; enables MITM attacks; set to false or remove (CWE-295, gosec G402)"
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SSH insecure host-key verification
@@ -176,6 +187,21 @@ scope    = "**"
 search   = "all"
 severity = "warning"
 message  = "Listening on 0.0.0.0 or :port — binds all interfaces; specify a host address to limit exposure"
+
+# http.Server without ReadTimeout allows slow/stalled clients to hold connections
+# open indefinitely.  A Slowloris attack exhausts all goroutines with near-zero bandwidth.
+# Set ReadTimeout, ReadHeaderTimeout, WriteTimeout, and IdleTimeout on every http.Server.
+# Chain: fires only when ReadTimeout does not appear anywhere in the enclosing function.
+[[rules]]
+name     = "go_http_server_no_timeout"
+pattern  = '\bhttp\.Server\s*\{'
+scope    = "**::*"
+search   = "code"
+severity = "info"
+message  = "http.Server without ReadTimeout — missing timeouts allow Slowloris DoS; set ReadTimeout, ReadHeaderTimeout, WriteTimeout, and IdleTimeout (CWE-400)"
+chain    = [
+    { pattern = '\bReadTimeout\b', relationship = "anywhere_in_method", negate = true },
+]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -480,3 +506,138 @@ scope    = "**"
 search   = "code"
 severity = "error"
 message  = "XMLParseNoEnt — enables XML external entity resolution; do not pass user data to this parser without entity expansion disabled"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Asymmetric cryptography — RSA padding oracle and weak key sizes
+# CWE-780 (Bleichenbacher), CWE-326 (Inadequate Encryption Strength)
+# Semgrep rules: rsa-pkcs1v15, rsa-key-size
+# gosec: G403
+# ══════════════════════════════════════════════════════════════════════════════
+
+# rsa.EncryptPKCS1v15 / rsa.DecryptPKCS1v15 use PKCS#1 v1.5 padding, vulnerable
+# to Bleichenbacher's 1998 adaptive chosen-ciphertext (padding oracle) attack.
+# Use rsa.EncryptOAEP / rsa.DecryptOAEP with SHA-256 or SHA-512.
+[[rules]]
+name     = "go_rsa_pkcs1v15"
+pattern  = '\brsa\.(?:EncryptPKCS1v15|DecryptPKCS1v15)\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "rsa.EncryptPKCS1v15/DecryptPKCS1v15 — vulnerable to Bleichenbacher padding oracle attack (CWE-780); use rsa.EncryptOAEP / rsa.DecryptOAEP with SHA-256"
+
+# RSA keys of 512 bits can be factored in hours; 1024-bit keys are within reach
+# of well-resourced adversaries and prohibited by NIST SP 800-131A Rev. 2.
+# Use at least 2048 bits (prefer 4096) for new keys.
+# [^,\n]+ matches the rand.Reader argument without crossing to the size argument;
+# \b after the size prevents 5120 or 10240 from matching.
+[[rules]]
+name     = "go_rsa_weak_key_size"
+pattern  = '\brsa\.GenerateKey\s*\([^,\n]+,\s*(?:512|1024)\b'
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "rsa.GenerateKey with 512 or 1024-bit key — use at least 2048 bits (prefer 4096); NIST SP 800-131A prohibits keys below 2048 bits (CWE-326, gosec G403)"
+
+# P-224 provides roughly 112-bit security, below the 128-bit minimum recommended
+# by NIST SP 800-57 Part 1 Rev. 5 for new applications.
+# Covers both crypto/elliptic (elliptic.P224()) and crypto/ecdh (ecdh.P224(), Go 1.20+).
+[[rules]]
+name     = "go_ecdh_p224"
+pattern  = '\b(?:elliptic|ecdh)\.P224\s*\(\s*\)'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "P-224 elliptic curve — provides only ~112-bit security; use P-256 (128-bit), P-384, or P-521 per NIST SP 800-57 (CWE-326)"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CORS wildcard — permissive cross-origin policy
+# CWE-942 (Permissive Cross-domain Policy with Untrusted Domains)
+# Semgrep rule: cors-wildcard
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Setting Access-Control-Allow-Origin to "*" allows any web origin to read the
+# response via fetch/XMLHttpRequest, defeating the Same-Origin Policy.
+# Maintain an explicit allowlist and echo only the matched trusted origin.
+[[rules]]
+name     = "go_cors_wildcard"
+pattern  = '\.(?:Set|Add)\s*\(\s*"Access-Control-Allow-Origin",\s*"\*"\s*\)'
+scope    = "**"
+search   = "all"
+severity = "warning"
+message  = "CORS Access-Control-Allow-Origin: \"*\" — allows any origin to read responses; maintain an explicit origin allowlist (CWE-942)"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# File / directory created with world-writable permissions
+# CWE-732 (Incorrect Permission Assignment for Critical Resource)
+# Semgrep rule: file-permission
+# gosec: G302, G306
+# ══════════════════════════════════════════════════════════════════════════════
+
+# os.WriteFile / OpenFile / Mkdir / MkdirAll called with 0666 or 0777 grants
+# write access to all users on the system, allowing other processes to overwrite
+# or inject content.  Use 0600 for files, 0700 for directories.
+# Chain: anywhere_in_statement searches raw bytes of the call statement, covering
+# bare octal (0777) and Go 1.13+ prefix forms (0o777, 0O777).
+[[rules]]
+name     = "go_file_perm_world_write"
+pattern  = '\bos\.(?:WriteFile|OpenFile|MkdirAll|Mkdir)\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "os.WriteFile/OpenFile/Mkdir/MkdirAll with world-writable permission (0666/0777) — use 0600 for files or 0700 for directories (CWE-732, gosec G302/G306)"
+chain    = [
+    { pattern = '\b0(?:o|O)?(?:777|666)\b', relationship = "anywhere_in_statement", negate = false },
+]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Password hashing — bcrypt cost factor too low
+# CWE-916 (Use of Password Hash with Insufficient Computational Effort)
+# Semgrep rule: bcrypt-low-cost
+# ══════════════════════════════════════════════════════════════════════════════
+
+# bcrypt.MinCost is 4; single-digit literal cost values (0-9) are too fast on
+# modern hardware (GPU rigs can evaluate millions per second at low cost factors).
+# OWASP recommends a cost factor of at least 10, preferably 12+ for new systems.
+# Pattern: [^,\n]+ stops at the first comma so [0-9] matches only the cost argument;
+# two-digit costs such as 10 or 12 are NOT matched because \s*\) would fail
+# after the first digit.
+[[rules]]
+name     = "go_bcrypt_weak_cost"
+pattern  = '\bbcrypt\.GenerateFromPassword\s*\([^,\n]+,\s*(?:bcrypt\.MinCost|[0-9])\s*\)'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "bcrypt.GenerateFromPassword with cost < 10 — too fast on modern hardware; use cost >= 10 (OWASP recommends 10-12) (CWE-916)"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SQL injection — fmt.Sprintf used to build SQL queries
+# CWE-89 (SQL Injection)
+# Semgrep rule: sql-injection-format-string (approximation)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# fmt.Sprintf is a common way to build SQL strings by interpolating variables
+# directly into the query.  Any user-controlled argument makes this a SQL injection
+# vulnerability.  Use database/sql parameterised queries (db.Query with ? placeholders)
+# or an ORM with placeholder support instead.
+#
+# Chain: anywhere_in_statement searches raw bytes of the entire Sprintf call
+# statement, including the format string literal itself, so SQL keywords inside
+# the string argument are found (chain patterns bypass the string/comment filter).
+# Case-insensitive flag (?i) covers both uppercase and lowercase SQL conventions.
+# scope = "**::*" restricts to function bodies to reduce noise from package-level
+# string constants that happen to contain SQL-like words.
+[[rules]]
+name     = "go_fmt_sql_injection"
+pattern  = '\bfmt\.Sprintf\s*\('
+scope    = "**::*"
+search   = "code"
+severity = "warning"
+message  = "fmt.Sprintf near SQL keyword — potential string-formatted SQL query; use parameterised queries (db.Query/db.Exec with ? placeholders) to prevent SQL injection (CWE-89)"
+chain    = [
+    { pattern = '(?i)\b(?:SELECT|INSERT|UPDATE|DELETE|WHERE|FROM|DROP|ALTER)\b', relationship = "anywhere_in_statement", negate = false },
+]
