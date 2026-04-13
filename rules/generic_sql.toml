@@ -177,6 +177,15 @@ severity             = "error"
 message              = "SQL GRANT ALL — overly broad privilege grant; specify only the minimum required permissions"
 
 [[rules]]
+name                 = "sql_grant_identified_by"
+pattern              = '\bGRANT\b.+\bIDENTIFIED\s+BY\b'
+dot_matches_new_line = true
+scope                = "**"
+search               = "all"
+severity             = "error"
+message              = "SQL GRANT … IDENTIFIED BY embeds a raw password in the statement — it will appear in query logs, audit trails, and version-controlled scripts; create the user separately with a hashed credential or a secrets-manager reference"
+
+[[rules]]
 name                 = "sql_revoke"
 pattern              = '\bREVOKE\b.+\bFROM\b'
 dot_matches_new_line = true
