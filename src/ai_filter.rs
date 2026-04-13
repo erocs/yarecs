@@ -20,7 +20,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::Path;
 
-use crate::engine::{AiVerdict, ScanMatch};
+use crate::engine::{AiClassification, AiVerdict, ScanMatch};
 
 // ---------------------------------------------------------------------------
 // Config
@@ -57,10 +57,13 @@ pub fn load_ai_config(path: &Path) -> Result<AiConfig> {
 const DEFAULT_SYSTEM: &str = "\
 You are a senior security code reviewer. \
 You will be given a static analysis finding and the surrounding source code. \
-Determine whether the finding is a genuine security concern or a false positive. \
+Determine whether the finding is a genuine security concern, a false positive, \
+or whether there is insufficient information in the snippet to make a determination. \
 Respond ONLY with a JSON object — no markdown fences, no explanation outside the JSON — \
 in exactly this format:\n\
-{\"is_false_positive\": <true|false>, \"reasoning\": \"<one sentence>\"}";
+{\"verdict\": \"<true_positive|false_positive|insufficient_info>\", \"reasoning\": \"<one sentence or empty string>\"}\n\
+Use \"insufficient_info\" when the provided snippet does not contain enough context \
+to make a confident determination; leave \"reasoning\" as an empty string in that case.";
 
 // ---------------------------------------------------------------------------
 // Classification
@@ -122,13 +125,22 @@ pub fn classify_match(config: &AiConfig, m: &ScanMatch) -> Result<AiVerdict> {
     let parsed: serde_json::Value =
         serde_json::from_str(content).context("AI response was not parseable JSON")?;
 
-    let is_fp = parsed["is_false_positive"]
-        .as_bool()
-        .context("AI JSON missing 'is_false_positive' bool")?;
-    let reasoning = parsed["reasoning"]
+    let verdict_str = parsed["verdict"]
         .as_str()
-        .unwrap_or("(no reasoning provided)")
-        .to_string();
+        .context("AI JSON missing 'verdict' string")?;
+    let classification = match verdict_str {
+        "true_positive"    => AiClassification::TruePositive,
+        "false_positive"   => AiClassification::FalsePositive,
+        "insufficient_info" => AiClassification::Insufficient,
+        other => anyhow::bail!("AI JSON 'verdict' has unexpected value: {other:?}"),
+    };
+    let reasoning = match classification {
+        AiClassification::Insufficient => String::new(),
+        _ => parsed["reasoning"]
+            .as_str()
+            .unwrap_or("")
+            .to_string(),
+    };
 
-    Ok(AiVerdict { is_false_positive: is_fp, reasoning })
+    Ok(AiVerdict { classification, reasoning })
 }

@@ -94,8 +94,19 @@ fn write_text(out: &mut dyn Write, matches: &[ScanMatch], meta: &ScanMetadata) -
         let indented = m.snippet.replace('\n', "\n  ");
         writeln!(out, "  {}", indented)?;
         if let Some(ref v) = m.ai_verdict {
-            let label = if v.is_false_positive { "FALSE POSITIVE" } else { "CONFIRMED" };
-            writeln!(out, "  [AI: {} \u{2014} {}]", label, v.reasoning)?;
+            use crate::engine::AiClassification;
+            match v.classification {
+                AiClassification::Insufficient => writeln!(out, "  [AI: INSUFFICIENT INFO]")?,
+                AiClassification::RequestError => writeln!(out, "  [AI: REQUEST ERROR]")?,
+                _ => {
+                    let label = if v.classification == AiClassification::FalsePositive {
+                        "FALSE POSITIVE"
+                    } else {
+                        "CONFIRMED"
+                    };
+                    writeln!(out, "  [AI: {} \u{2014} {}]", label, v.reasoning)?;
+                }
+            }
         }
     }
     Ok(())
@@ -158,11 +169,20 @@ fn write_json(out: &mut dyn Write, matches: &[ScanMatch], meta: &ScanMetadata) -
         let mat  = json_str(&m.matched_text);
         let snip = json_str(&m.snippet);
         let ai = match &m.ai_verdict {
-            Some(v) => format!(
-                "{{\"is_false_positive\":{},\"reasoning\":{}}}",
-                v.is_false_positive,
-                json_str(&v.reasoning)
-            ),
+            Some(v) => {
+                use crate::engine::AiClassification;
+                let verdict_s = match v.classification {
+                    AiClassification::TruePositive  => "true_positive",
+                    AiClassification::FalsePositive => "false_positive",
+                    AiClassification::Insufficient  => "insufficient_info",
+                    AiClassification::RequestError  => "request_error",
+                };
+                format!(
+                    "{{\"verdict\":{},\"reasoning\":{}}}",
+                    json_str(verdict_s),
+                    json_str(&v.reasoning)
+                )
+            }
             None => "null".to_string(),
         };
         writeln!(
@@ -187,9 +207,15 @@ fn write_json(out: &mut dyn Write, matches: &[ScanMatch], meta: &ScanMetadata) -
 fn write_csv(out: &mut dyn Write, matches: &[ScanMatch]) -> io::Result<()> {
     writeln!(out, "rule,file,line,col,severity,scope,context,message,match,snippet,ai_verdict,ai_reasoning")?;
     for m in matches {
+        use crate::engine::AiClassification;
         let (ai_verdict, ai_reasoning) = match &m.ai_verdict {
             Some(v) => (
-                if v.is_false_positive { "false_positive" } else { "confirmed" },
+                match v.classification {
+                    AiClassification::TruePositive  => "confirmed",
+                    AiClassification::FalsePositive => "false_positive",
+                    AiClassification::Insufficient  => "insufficient",
+                    AiClassification::RequestError  => "request_error",
+                },
                 v.reasoning.as_str(),
             ),
             None => ("", ""),
@@ -280,18 +306,38 @@ fn write_sarif(out: &mut dyn Write, matches: &[ScanMatch], meta: &ScanMetadata) 
         // so SARIF viewers surface everything without needing custom columns.
         let ai_suffix = match &m.ai_verdict {
             Some(v) => {
-                let label = if v.is_false_positive { "FALSE POSITIVE" } else { "CONFIRMED" };
-                format!(" [AI: {} \u{2014} {}]", label, v.reasoning)
+                use crate::engine::AiClassification;
+                match v.classification {
+                    AiClassification::Insufficient => " [AI: INSUFFICIENT INFO]".to_string(),
+                    AiClassification::RequestError => " [AI: REQUEST ERROR]".to_string(),
+                    _ => {
+                        let label = if v.classification == AiClassification::FalsePositive {
+                            "FALSE POSITIVE"
+                        } else {
+                            "CONFIRMED"
+                        };
+                        format!(" [AI: {} \u{2014} {}]", label, v.reasoning)
+                    }
+                }
             }
             None => String::new(),
         };
         let full_msg = format!("{} [{}]{}{}", m.message, scope, ctx_suffix, ai_suffix);
         let props = match &m.ai_verdict {
-            Some(v) => format!(
-                ", \"properties\": {{\"ai_false_positive\": {}, \"ai_reasoning\": {}}}",
-                v.is_false_positive,
-                json_str(&v.reasoning)
-            ),
+            Some(v) => {
+                use crate::engine::AiClassification;
+                let verdict_s = match v.classification {
+                    AiClassification::TruePositive  => "true_positive",
+                    AiClassification::FalsePositive => "false_positive",
+                    AiClassification::Insufficient  => "insufficient_info",
+                    AiClassification::RequestError  => "request_error",
+                };
+                format!(
+                    ", \"properties\": {{\"ai_verdict\": {}, \"ai_reasoning\": {}}}",
+                    json_str(verdict_s),
+                    json_str(&v.reasoning)
+                )
+            }
             None => String::new(),
         };
         let uri = sarif_uri(&m.file);
@@ -562,9 +608,17 @@ mod tests {
     }
 
     fn make_match_with_verdict(snippet: &str, is_fp: bool, reasoning: &str) -> ScanMatch {
-        use crate::engine::AiVerdict;
+        use crate::engine::{AiClassification, AiVerdict};
         let mut m = make_match(snippet);
-        m.ai_verdict = Some(AiVerdict { is_false_positive: is_fp, reasoning: reasoning.to_string() });
+        let classification = if is_fp { AiClassification::FalsePositive } else { AiClassification::TruePositive };
+        m.ai_verdict = Some(AiVerdict { classification, reasoning: reasoning.to_string() });
+        m
+    }
+
+    fn make_match_with_insufficient(snippet: &str) -> ScanMatch {
+        use crate::engine::{AiClassification, AiVerdict};
+        let mut m = make_match(snippet);
+        m.ai_verdict = Some(AiVerdict { classification: AiClassification::Insufficient, reasoning: String::new() });
         m
     }
 
@@ -611,7 +665,7 @@ mod tests {
         let out = collect(&[m], OutputFormat::Sarif);
         assert!(out.contains("FALSE POSITIVE"), "AI label missing from message: {out}");
         assert!(out.contains("benign usage"), "reasoning missing: {out}");
-        assert!(out.contains("\"ai_false_positive\": true"), "properties missing: {out}");
+        assert!(out.contains("\"ai_verdict\": \"false_positive\""), "properties missing: {out}");
         assert!(out.contains("\"ai_reasoning\""), "ai_reasoning key missing: {out}");
     }
 
@@ -621,7 +675,22 @@ mod tests {
         let out = collect(&[m], OutputFormat::Sarif);
         assert!(out.contains("CONFIRMED"), "AI label missing from message: {out}");
         assert!(out.contains("real issue"), "reasoning missing: {out}");
-        assert!(out.contains("\"ai_false_positive\": false"), "properties missing: {out}");
+        assert!(out.contains("\"ai_verdict\": \"true_positive\""), "properties missing: {out}");
+    }
+
+    #[test]
+    fn sarif_output_insufficient_verdict_in_message_no_reasoning() {
+        let m = make_match_with_insufficient("x");
+        let out = collect(&[m], OutputFormat::Sarif);
+        assert!(out.contains("INSUFFICIENT INFO"), "AI label missing from message: {out}");
+        assert!(out.contains("\"ai_verdict\": \"insufficient_info\""), "properties missing: {out}");
+    }
+
+    #[test]
+    fn csv_output_insufficient_verdict() {
+        let m = make_match_with_insufficient("x");
+        let out = collect(&[m], OutputFormat::Csv);
+        assert!(out.contains("insufficient"), "verdict label missing: {out}");
     }
 
     #[test]

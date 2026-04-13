@@ -58,6 +58,12 @@ struct Args {
     #[arg(short = 'x', long)]
     exclude: Vec<String>,
 
+    /// File name pattern(s) to exclude from the scan; may be repeated.
+    /// Matched against the file name only (not the full path).
+    /// Supports `*` as a wildcard, e.g. `--exclude-files *.sarif --exclude-files *.min.js`.
+    #[arg(short = 'X', long = "exclude-files")]
+    exclude_files: Vec<String>,
+
     /// Scan every file regardless of extension (overrides --extensions).
     /// Useful for credential scanning where secrets can appear in any text file
     /// (.env, Makefile, Dockerfile, files with no extension, etc.).
@@ -161,6 +167,12 @@ fn main() -> Result<()> {
                 continue;
             }
 
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if args.exclude_files.iter().any(|pat| glob_match(pat, name)) {
+                    continue;
+                }
+            }
+
             let raw = match std::fs::read_to_string(path) {
                 Ok(s) => s,
                 Err(e) => {
@@ -208,18 +220,30 @@ fn main() -> Result<()> {
             eprint!("  [{}/{}] {}:{} … ", i + 1, total, m.file.display(), m.line);
             match ai_filter::classify_match(&ai_cfg, m) {
                 Ok(verdict) => {
-                    let label = if verdict.is_false_positive { "false positive" } else { "confirmed" };
+                    use crate::engine::AiClassification;
+                    let label = match verdict.classification {
+                        AiClassification::TruePositive  => "confirmed",
+                        AiClassification::FalsePositive => "false positive",
+                        AiClassification::Insufficient  => "insufficient info",
+                        AiClassification::RequestError  => "request error",
+                    };
                     eprintln!("{}", label);
                     m.ai_verdict = Some(verdict);
                 }
                 Err(e) => {
-                    eprintln!("AI error: {:#}", e);
-                    // ai_verdict stays None; match is retained
+                    use crate::engine::{AiClassification, AiVerdict};
+                    eprintln!("request error: {:#}", e);
+                    m.ai_verdict = Some(AiVerdict {
+                        classification: AiClassification::RequestError,
+                        reasoning: String::new(),
+                    });
                 }
             }
         }
         if args.ai_filter {
-            all_matches.retain(|m| m.ai_verdict.as_ref().map_or(true, |v| !v.is_false_positive));
+            use crate::engine::AiClassification;
+            all_matches.retain(|m| m.ai_verdict.as_ref()
+                .map_or(true, |v| v.classification != AiClassification::FalsePositive));
         }
     }
 

@@ -68,10 +68,24 @@ impl std::fmt::Display for MatchContext {
 // Match result
 // ---------------------------------------------------------------------------
 
+/// Four-way classification returned by the optional AI classifier.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AiClassification {
+    /// The finding is a genuine security concern.
+    TruePositive,
+    /// The finding is a false positive.
+    FalsePositive,
+    /// The provided snippet lacks enough context to make a determination.
+    Insufficient,
+    /// The AI API request failed (network error, rate limit, parse failure, etc.).
+    RequestError,
+}
+
 /// Verdict returned by the optional AI false-positive classifier.
 #[derive(Debug, Clone)]
 pub struct AiVerdict {
-    pub is_false_positive: bool,
+    pub classification: AiClassification,
+    /// Empty when `classification` is `Insufficient`.
     pub reasoning: String,
 }
 
