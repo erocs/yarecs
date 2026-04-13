@@ -117,6 +117,27 @@ fn main() -> Result<()> {
     let command_line = std::env::args().collect::<Vec<_>>().join(" ");
     let args = Args::parse();
 
+    // ── Upfront file existence checks ───────────────────────────────────────
+    // Validate all file-path arguments before starting any scan work so the
+    // user gets an immediate error rather than a failure after a long run.
+    for config_path in &args.config {
+        if !config_path.exists() {
+            anyhow::bail!("config file not found: {}", config_path.display());
+        }
+    }
+    if let Some(ref ai_path) = args.ai_config {
+        if !ai_path.exists() {
+            anyhow::bail!("AI config file not found: {}", ai_path.display());
+        }
+    }
+    if let Some(ref out_path) = args.output {
+        // Check that the parent directory exists so we fail before scanning.
+        let parent = out_path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        if !parent.exists() {
+            anyhow::bail!("output directory does not exist: {}", parent.display());
+        }
+    }
+
     let extensions: Vec<&str> = args.extensions.split(',').map(str::trim).collect();
 
     let rules = if args.dump_scopes {
