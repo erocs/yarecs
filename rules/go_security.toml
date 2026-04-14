@@ -641,3 +641,24 @@ message  = "fmt.Sprintf near SQL keyword — potential string-formatted SQL quer
 chain    = [
     { pattern = '(?i)\b(?:SELECT|INSERT|UPDATE|DELETE|WHERE|FROM|DROP|ALTER)\b', relationship = "anywhere_in_statement", negate = false },
 ]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Path traversal — filepath.Join absolute-path override
+# CWE-22 (Path Traversal)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# filepath.Join silently discards all preceding components when any argument is
+# an absolute path.  filepath.Join("/var/www", userInput) returns "/etc/passwd"
+# if the caller supplies "/etc/passwd".  Note that filepath.Join also calls
+# filepath.Clean internally, so "../" sequences are also collapsed — but an
+# absolute argument is the stealthiest bypass because it looks like a filename.
+# Fix: reject arguments where filepath.IsAbs returns true, or assert that the
+# final joined path starts with the intended root after filepath.Clean.
+[[rules]]
+name     = "go_filepath_join"
+pattern  = '\bfilepath\.Join\s*\('
+scope    = "**::*"
+search   = "code"
+severity = "warning"
+message  = "filepath.Join — if any argument is user-controlled and absolute (e.g. /etc/passwd), all preceding components are silently discarded (path traversal CWE-22); reject absolute arguments with filepath.IsAbs, or verify the result is rooted under the intended base after filepath.Clean"
