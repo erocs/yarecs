@@ -81,15 +81,17 @@ message  = "crypto/rc4 — RC4 is broken; use AES-GCM"
 # Semgrep rule: math-random-used
 # ══════════════════════════════════════════════════════════════════════════════
 
-# math/rand is a deterministic PRNG — output is predictable from seed.
-# Flag the import so the entire file is reviewed; replace with crypto/rand.
+# math/rand is a non-cryptographic PRNG — not suitable for security-sensitive values.
+# Since Go 1.20 the global source is auto-seeded randomly at startup (GODEBUG=randautoseed=0
+# reverts to the old seed=1), so output is no longer trivially deterministic, but the algorithm
+# remains cryptographically weak. Flag the import so the entire file is reviewed.
 [[rules]]
 name     = "go_math_rand_import"
 pattern  = '"math/rand'
 scope    = "**"
 search   = "all"
 severity = "warning"
-message  = "math/rand — predictable PRNG; use crypto/rand for security-sensitive values (tokens, salts, nonces)"
+message  = "math/rand — non-cryptographic PRNG (auto-seeded since Go 1.20 but not crypto-safe); use crypto/rand for security-sensitive values (tokens, salts, nonces)"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
