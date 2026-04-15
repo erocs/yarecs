@@ -189,6 +189,28 @@ message  = "Newtonsoft TypeNameHandling != None — enables arbitrary type insta
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Unsafe deserialization — JsonMediaTypeFormatter TypeNameHandling
+# CWE-502
+# Semgrep rule: json-media-type-formatter-type-name-handling
+# ══════════════════════════════════════════════════════════════════════════════
+
+# JsonMediaTypeFormatter.SerializerSettings.TypeNameHandling != None causes the
+# ASP.NET Web API JSON deserializer to embed/honour .NET type names in the HTTP
+# request body.  An attacker can supply any type, enabling RCE via gadget chains.
+# Use TypeNameHandling.None and a custom ISerializationBinder if type info is needed.
+# Chain: fires on the formatter reference only when a dangerous TypeNameHandling
+# value is set anywhere in the same class (covers all assignment forms).
+[[rules]]
+name     = "cs_json_media_type_formatter_type_name_handling"
+pattern  = '\bJsonMediaTypeFormatter\b'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "JsonMediaTypeFormatter with TypeNameHandling != None — HTTP request bodies can instantiate arbitrary .NET types (RCE); use TypeNameHandling.None with a SerializationBinder allowlist"
+chain    = [{ pattern = "TypeNameHandling\\.(?:All|Auto|Objects|Arrays)\\b", relationship = "anywhere_in_class", negate = false }]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Unsafe deserialization — fastJSON BadListTypeChecking
 # CWE-502
 # Semgrep rule: fast-json
