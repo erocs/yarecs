@@ -287,10 +287,6 @@ fn main() -> Result<()> {
             all_matches.len(),
             errors,
         );
-
-        if errors > 0 {
-            std::process::exit(1);
-        }
     }
 
     Ok(())
