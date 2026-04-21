@@ -132,7 +132,7 @@ fn main() -> Result<()> {
     }
     if let Some(ref out_path) = args.output {
         // Check that the parent directory exists so we fail before scanning.
-        let parent = out_path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let parent = out_path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| std::path::Path::new("."));
         if !parent.exists() {
             anyhow::bail!("output directory does not exist: {}", parent.display());
         }
