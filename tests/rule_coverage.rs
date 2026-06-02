@@ -112,6 +112,10 @@ fn rule_fires(json: &str, rule: &str) -> bool {
 }
 
 fn run_fixture(fixture_path: &str) {
+    run_fixture_slice(fixture_path, 0, usize::MAX);
+}
+
+fn run_fixture_slice(fixture_path: &str, start: usize, end: usize) {
     let content = fs::read_to_string(fixture_path)
         .unwrap_or_else(|e| panic!("cannot read fixture {fixture_path}: {e}"));
     let fixture: Fixture = toml::from_str(&content)
@@ -120,7 +124,7 @@ fn run_fixture(fixture_path: &str) {
     let bin = yarecs_bin();
     let mut failures: Vec<String> = Vec::new();
 
-    for c in &fixture.cases {
+    for c in fixture.cases.iter().skip(start).take(end.saturating_sub(start)) {
         let ext = c.ext.as_deref().unwrap_or(&fixture.ext);
 
         let hit_str = c.hit_b64_parts.as_ref()
@@ -175,8 +179,23 @@ fn csharp_security() {
 }
 
 #[test]
-fn generic_secrets() {
-    run_fixture("tests/fixtures/generic_secrets.toml");
+fn generic_secrets_1() {
+    run_fixture_slice("tests/fixtures/generic_secrets.toml", 0, 13);
+}
+
+#[test]
+fn generic_secrets_2() {
+    run_fixture_slice("tests/fixtures/generic_secrets.toml", 13, 26);
+}
+
+#[test]
+fn generic_secrets_3() {
+    run_fixture_slice("tests/fixtures/generic_secrets.toml", 26, 38);
+}
+
+#[test]
+fn generic_secrets_4() {
+    run_fixture_slice("tests/fixtures/generic_secrets.toml", 38, usize::MAX);
 }
 
 #[test]
