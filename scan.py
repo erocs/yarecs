@@ -117,7 +117,8 @@ def count_files(directory: str, exclude: list[str] | None = None) -> dict[str, i
 def run_yarecs(yarecs: str, directory: str, config_files: list[str],
                extensions: list[str] | None, output_path: str,
                fmt: str, all_files: bool = False,
-               exclude: list[str] | None = None) -> int:
+               exclude: list[str] | None = None,
+               ai_config: str | None = None) -> int:
     """Run yarecs and return the process exit code."""
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -131,6 +132,8 @@ def run_yarecs(yarecs: str, directory: str, config_files: list[str],
         cmd += ['--extensions', ','.join(extensions)]
     for d in (exclude or []):
         cmd += ['--exclude', d]
+    if ai_config:
+        cmd += ['--ai-config', ai_config]
     cmd.append(directory)
 
     print(f'  Running: {" ".join(cmd)}')
@@ -156,6 +159,9 @@ def main() -> None:
     parser.add_argument('--exclude', action='append', default=[],
                         metavar='DIR',
                         help='Directory name to exclude (may be repeated; supports * wildcard)')
+    parser.add_argument('--ai-config', default=None,
+                        metavar='PATH',
+                        help='Path to ai.toml for AI false-positive classification')
     args = parser.parse_args()
 
     directory = os.path.abspath(args.directory)
@@ -189,7 +195,8 @@ def main() -> None:
     out_generic = f'{args.name}_generic.{file_ext}'
     rc = run_yarecs(yarecs, directory, GENERIC_RULES,
                     extensions=None, output_path=out_generic,
-                    fmt=fmt, all_files=True, exclude=args.exclude)
+                    fmt=fmt, all_files=True, exclude=args.exclude,
+                    ai_config=args.ai_config)
     status = 'ok' if rc == 0 else f'exit {rc}'
     print(f'  -> {out_generic} [{status}]')
 
@@ -209,7 +216,8 @@ def main() -> None:
         out_lang = f'{args.name}_{lang}.{file_ext}'
         rc = run_yarecs(yarecs, directory, rule_files,
                         extensions=present, output_path=out_lang,
-                        fmt=fmt, all_files=False, exclude=args.exclude)
+                        fmt=fmt, all_files=False, exclude=args.exclude,
+                        ai_config=args.ai_config)
         status = 'ok' if rc == 0 else f'exit {rc}'
         print(f'  -> {out_lang} [{status}]')
 
