@@ -159,9 +159,12 @@ fn main() -> Result<()> {
         for entry in WalkDir::new(input_path)
             .into_iter()
             .filter_entry(|e| {
-                // Prune excluded directories before descending into them.
+                // Prune excluded and dot directories before descending into them.
                 if e.file_type().is_dir() {
                     if let Some(name) = e.file_name().to_str() {
+                        if name.starts_with('.') {
+                            return false;
+                        }
                         if args.exclude.iter().any(|pat| glob_match(pat, name)) {
                             return false;
                         }
