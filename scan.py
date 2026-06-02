@@ -20,7 +20,7 @@ import sys
 
 ALL_EXTENSIONS = [
     'c', 'cpp', 'cc', 'cxx', 'h', 'hpp', 'hh',
-    'cs', 'java', 'go', 'rs', 'kt', 'kts', 'swift',
+    'cs', 'java', 'go', 'rs', 'kt', 'kts', 'swift', 'py',
 ]
 
 # Each entry: language_tag -> (extensions_list, rule_files_list)
@@ -41,6 +41,8 @@ LANGUAGE_SCANS = [
                  ['rules/kotlin_security.toml']),
     ('swift',    ['swift'],
                  []),  # no swift-specific rules yet; skip if empty
+    ('python',   ['py'],
+                 ['rules/python_security.toml']),
 ]
 
 GENERIC_RULES = [
