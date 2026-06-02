@@ -213,3 +213,8 @@ fn generic_sql() {
 fn generic_shell() {
     run_fixture("tests/fixtures/generic_shell.toml");
 }
+
+#[test]
+fn python_security() {
+    run_fixture("tests/fixtures/python_security.toml");
+}

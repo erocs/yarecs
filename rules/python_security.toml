@@ -1,0 +1,450 @@
+# Python Security Rules
+#
+# Usage:
+#   yarecs --config rules/python_security.toml \
+#          --extensions py,pyw,pyi \
+#          ./
+#
+# ── Scope notes ──────────────────────────────────────────────────────────────
+# scope = "**"    — matches everywhere including file/module scope
+# scope = "**::*" — matches only inside named scopes (functions, methods, classes)
+#
+# Runtime API call rules use scope = "**::*" to reduce noise from module-level
+# glue scripts and to pin findings to the enclosing function in output.
+# Import statements, configuration assignments, and framework settings stay at
+# scope = "**" because those patterns legitimately live at module level.
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Weak hash functions
+# CWE-327, CWE-328
+# ══════════════════════════════════════════════════════════════════════════════
+
+# hashlib.md5() — collision-broken since 2004.
+[[rules]]
+name     = "py_hashlib_md5"
+pattern  = '\bhashlib\.md5\s*\('
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "hashlib.md5 — MD5 is collision-broken; use hashlib.sha256() or hashlib.sha512() for integrity, bcrypt/Argon2 for passwords"
+
+# hashlib.sha1() — collision-broken (SHAttered 2017).
+[[rules]]
+name     = "py_hashlib_sha1"
+pattern  = '\bhashlib\.sha1\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "hashlib.sha1 — SHA-1 is collision-broken; use hashlib.sha256() or hashlib.sha512()"
+
+# hashlib.new() with a weak algorithm name.
+# search = "all" because the algorithm string is a string literal; a code-gap search
+# would not find the opening quote.
+[[rules]]
+name     = "py_hashlib_new_weak"
+pattern  = "\\bhashlib\\.new\\s*\\(\\s*['\"](?:md5|sha1|sha224)['\"]"
+scope    = "**"
+search   = "all"
+severity = "error"
+message  = "hashlib.new() called with weak algorithm; use 'sha256' or 'sha512'"
+
+# SHA-224 is deprecated in many security policies.
+[[rules]]
+name     = "py_hashlib_sha224"
+pattern  = '\bhashlib\.sha224\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "hashlib.sha224 — SHA-224 is deprecated in many security policies; use sha384 or sha512"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Weak / broken symmetric ciphers (PyCryptodome / PyCrypto)
+# CWE-327
+# ══════════════════════════════════════════════════════════════════════════════
+
+# DES / 3DES — 56-bit key / 64-bit block; SWEET32 birthday attack on 3DES.
+[[rules]]
+name     = "py_pycrypto_des"
+pattern  = '\b(?:DES|DES3|TripleDES)\.new\s*\('
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "DES/3DES cipher — broken; use AES-GCM (Crypto.Cipher.AES with MODE_GCM)"
+
+# RC4 / ARC4 — key-scheduling biases; broken in BEAST and RC4NOMORE attacks.
+[[rules]]
+name     = "py_pycrypto_arc4"
+pattern  = '\bARC4\.new\s*\('
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "ARC4 (RC4) cipher — broken; use AES-GCM"
+
+# Blowfish — 64-bit block size makes it vulnerable to SWEET32 birthday attack.
+[[rules]]
+name     = "py_pycrypto_blowfish"
+pattern  = '\bBlowfish\.new\s*\('
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "Blowfish cipher — 64-bit block size is vulnerable to SWEET32; use AES-GCM"
+
+# ECB mode (PyCryptodome) — deterministic; leaks plaintext structure (penguin attack).
+[[rules]]
+name     = "py_pycrypto_ecb_mode"
+pattern  = '\bMODE_ECB\b'
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "ECB mode — deterministic encryption leaks plaintext structure; use GCM or CBC with a random IV"
+
+# ECB mode (cryptography package).
+[[rules]]
+name     = "py_cryptography_ecb"
+pattern  = '\bmodes\.ECB\s*\('
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "ECB mode — deterministic encryption leaks plaintext structure; use GCM or CBC with a random IV"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Predictable RNG
+# CWE-338
+# ══════════════════════════════════════════════════════════════════════════════
+
+# `import random` — non-cryptographic PRNG; not suitable for security-sensitive values.
+# scope = "**" because import statements are always at module level.
+[[rules]]
+name     = "py_random_module"
+pattern  = '\bimport\s+random\b'
+scope    = "**"
+search   = "all"
+severity = "warning"
+message  = "import random — non-cryptographic PRNG; use the secrets module or os.urandom() for security-sensitive values (tokens, salts, nonces)"
+
+# random.seed() called inside a function — makes output predictable for that execution path.
+[[rules]]
+name     = "py_random_seed"
+pattern  = '\brandom\.seed\s*\('
+scope    = "**::*"
+search   = "code"
+severity = "warning"
+message  = "random.seed() — seeding the PRNG inside a function makes output predictable; use the secrets module for security-sensitive randomness"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Code injection
+# CWE-95, CWE-78
+# scope = "**::*": eval/exec at module level is common in scripts; calls inside
+# functions handling request data are the high-risk cases.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# eval() — executes arbitrary Python from a string.
+[[rules]]
+name     = "py_eval"
+pattern  = '\beval\s*\('
+scope    = "**::*"
+search   = "code"
+severity = "error"
+message  = "eval() — executes arbitrary Python code; use ast.literal_eval() for safe expression parsing or redesign to avoid dynamic evaluation"
+
+# exec() — executes arbitrary Python statements from a string.
+[[rules]]
+name     = "py_exec"
+pattern  = '\bexec\s*\('
+scope    = "**::*"
+search   = "code"
+severity = "error"
+message  = "exec() — executes arbitrary Python code; avoid dynamic code execution from user-controlled input"
+
+# compile() — produces executable code objects; often paired with exec/eval.
+[[rules]]
+name     = "py_compile_exec"
+pattern  = '\bcompile\s*\('
+scope    = "**::*"
+search   = "code"
+severity = "warning"
+message  = "compile() — creates executable code objects; verify source is not user-controlled"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Unsafe deserialization
+# CWE-502
+# scope = "**::*": deserialization of untrusted data happens inside request handlers.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# pickle.load / pickle.loads — arbitrary code execution on deserialization.
+[[rules]]
+name     = "py_pickle_load"
+pattern  = '\bpickle\.loads?\s*\('
+scope    = "**::*"
+search   = "code"
+severity = "error"
+message  = "pickle.load/loads — deserializing untrusted data executes arbitrary Python code; use json or a safe schema-validated format"
+
+# yaml.load() without an explicit Loader — allows arbitrary object construction.
+# Chain: only fire when Loader= is absent from the same call statement.
+# yaml.load(stream, Loader=yaml.SafeLoader) is safe and will not be flagged.
+[[rules]]
+name     = "py_yaml_load_unsafe"
+pattern  = '\byaml\.load\s*\('
+scope    = "**::*"
+search   = "code"
+severity = "error"
+message  = "yaml.load() without Loader= — can execute arbitrary Python; use yaml.safe_load() or yaml.load(data, Loader=yaml.SafeLoader)"
+chain    = [
+    { pattern = '\bLoader\s*=', relationship = "anywhere_in_statement", negate = true },
+]
+
+# jsonpickle.decode — reconstructs arbitrary Python objects, including code.
+[[rules]]
+name     = "py_jsonpickle_decode"
+pattern  = '\bjsonpickle\.decode\s*\('
+scope    = "**::*"
+search   = "code"
+severity = "error"
+message  = "jsonpickle.decode() — can instantiate arbitrary Python objects; avoid deserializing untrusted data with jsonpickle"
+
+# marshal.loads — deserializes Python bytecode; can execute arbitrary code.
+[[rules]]
+name     = "py_marshal_load"
+pattern  = '\bmarshal\.loads?\s*\('
+scope    = "**::*"
+search   = "code"
+severity = "error"
+message  = "marshal.loads() — deserializes untrusted bytecode; use json or another safe format"
+
+# shelve.open — uses pickle internally; opening untrusted shelf files is unsafe.
+[[rules]]
+name     = "py_shelve_open"
+pattern  = '\bshelve\.open\s*\('
+scope    = "**::*"
+search   = "code"
+severity = "warning"
+message  = "shelve.open() — backed by pickle; deserializing untrusted shelf files can execute arbitrary code"
+
+# dill.loads — like pickle but with a wider exploitable surface (lambdas, closures).
+[[rules]]
+name     = "py_dill_load"
+pattern  = '\bdill\.loads?\s*\('
+scope    = "**::*"
+search   = "code"
+severity = "error"
+message  = "dill.loads() — can deserialize and execute arbitrary Python objects; do not use with untrusted data"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Command injection
+# CWE-78
+# scope = "**::*": shell invocations inside request handlers carry injection risk.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# os.system() — passes a raw string to the shell; injection if user-controlled.
+[[rules]]
+name     = "py_os_system"
+pattern  = '\bos\.system\s*\('
+scope    = "**::*"
+search   = "code"
+severity = "error"
+message  = "os.system() — passes string to shell; use subprocess.run([...], shell=False) with a list of arguments instead"
+
+# subprocess with shell=True — enables shell interpretation; injection risk.
+[[rules]]
+name     = "py_subprocess_shell_true"
+pattern  = '\bshell\s*=\s*True\b'
+scope    = "**::*"
+search   = "code"
+severity = "error"
+message  = "shell=True — enables shell expansion; pass a list of arguments and omit shell=True to prevent command injection"
+
+# os.popen() — deprecated shell wrapper; use subprocess instead.
+[[rules]]
+name     = "py_os_popen"
+pattern  = '\bos\.popen\s*\('
+scope    = "**::*"
+search   = "code"
+severity = "error"
+message  = "os.popen() — passes string to shell; use subprocess.run([...], shell=False) instead"
+
+# popen2 module — deprecated; all variants pass strings to the shell.
+[[rules]]
+name     = "py_popen2"
+pattern  = '\bpopen2\.\w+\s*\('
+scope    = "**::*"
+search   = "code"
+severity = "error"
+message  = "popen2 (Python 2) — deprecated shell wrapper; use subprocess.run([...], shell=False)"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TLS / SSL misconfiguration
+# CWE-295, CWE-326
+# scope = "**::*": TLS setup happens inside connection or context factory functions.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# requests / httpx verify=False — disables server certificate validation entirely.
+[[rules]]
+name     = "py_requests_verify_false"
+pattern  = '\bverify\s*=\s*False\b'
+scope    = "**::*"
+search   = "code"
+severity = "error"
+message  = "verify=False — disables TLS certificate verification; remove or supply a CA bundle path instead"
+
+# ssl check_hostname=False — disables SNI hostname verification.
+[[rules]]
+name     = "py_ssl_no_check_hostname"
+pattern  = '\bcheck_hostname\s*=\s*False\b'
+scope    = "**::*"
+search   = "code"
+severity = "error"
+message  = "check_hostname=False — disables hostname verification; TLS connections can be intercepted"
+
+# ssl.CERT_NONE — no certificate validation at all.
+[[rules]]
+name     = "py_ssl_cert_none"
+pattern  = '\bssl\.CERT_NONE\b'
+scope    = "**::*"
+search   = "code"
+severity = "error"
+message  = "ssl.CERT_NONE — disables all certificate validation; use ssl.CERT_REQUIRED"
+
+# ssl._create_unverified_context() — explicitly bypasses certificate validation.
+[[rules]]
+name     = "py_ssl_unverified_context"
+pattern  = '\bssl\._create_unverified_context\s*\('
+scope    = "**::*"
+search   = "code"
+severity = "error"
+message  = "ssl._create_unverified_context() — bypasses certificate verification; use ssl.create_default_context()"
+
+# Obsolete protocol versions: SSLv2, SSLv3, TLS 1.0, TLS 1.1.
+[[rules]]
+name     = "py_ssl_protocol_weak"
+pattern  = '\bssl\.PROTOCOL_(?:SSLv2|SSLv3|TLSv1|TLSv1_1)\b'
+scope    = "**::*"
+search   = "code"
+severity = "error"
+message  = "Obsolete TLS/SSL protocol — SSLv2/3 and TLS 1.0/1.1 are deprecated; use ssl.PROTOCOL_TLS_CLIENT with minimum_version = ssl.TLSVersion.TLSv1_2"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Insecure temporary files
+# CWE-377
+# scope = "**::*": temp-file creation inside functions is the risk surface.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# tempfile.mktemp() — TOCTOU: the file can be replaced between creation and use.
+[[rules]]
+name     = "py_tempfile_mktemp"
+pattern  = '\btempfile\.mktemp\s*\('
+scope    = "**::*"
+search   = "code"
+severity = "warning"
+message  = "tempfile.mktemp() — TOCTOU race condition; use tempfile.mkstemp() or tempfile.NamedTemporaryFile() instead"
+
+# os.tempnam() — TOCTOU and deprecated in Python 3.
+[[rules]]
+name     = "py_os_tempnam"
+pattern  = '\bos\.tempnam\s*\('
+scope    = "**::*"
+search   = "code"
+severity = "warning"
+message  = "os.tempnam() — TOCTOU race condition and deprecated; use tempfile.mkstemp()"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# XML external entity injection (XXE)
+# CWE-611
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Standard-library XML parsers are not safe against XXE by default.
+# scope = "**" because xml.etree imports appear at module level.
+[[rules]]
+name     = "py_xml_stdlib"
+pattern  = '\bxml\.(?:etree|sax|dom|parsers)\b'
+scope    = "**"
+search   = "code"
+severity = "warning"
+message  = "stdlib XML parser — vulnerable to XXE and billion-laughs by default; use defusedxml instead"
+
+# lxml resolve_entities=True — explicitly enables entity expansion (XXE).
+[[rules]]
+name     = "py_lxml_resolve_entities"
+pattern  = '\bresolve_entities\s*=\s*True\b'
+scope    = "**::*"
+search   = "code"
+severity = "error"
+message  = "resolve_entities=True — enables XML external entity expansion (XXE); set resolve_entities=False"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Web framework misconfigurations
+# scope = "**": these settings live at module level in settings/config files.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Django DEBUG=True — exposes full stack traces and SQL queries to end users.
+[[rules]]
+name     = "py_django_debug_true"
+pattern  = '\bDEBUG\s*=\s*True\b'
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "DEBUG=True — exposes stack traces and internal details in production; set DEBUG=False and use environment variables"
+
+# Flask debug=True — enables the interactive Werkzeug debugger (remote code execution).
+# search = "all": host= string literal between .run( and debug=True would break code-gap search.
+[[rules]]
+name     = "py_flask_debug_true"
+pattern  = '\.run\s*\(.*\bdebug\s*=\s*True'
+scope    = "**"
+search   = "all"
+severity = "error"
+message  = "Flask debug=True — the interactive debugger allows arbitrary remote code execution; never enable in production"
+
+# Jinja2 autoescape=False — disables HTML escaping, enabling stored/reflected XSS.
+[[rules]]
+name     = "py_jinja2_autoescape_off"
+pattern  = '\bautoescape\s*=\s*False\b'
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "autoescape=False — disables Jinja2 HTML escaping; XSS vulnerabilities result from rendering untrusted content"
+
+# Django ALLOWED_HOSTS=['*'] — accepts any Host header; enables host header injection.
+# search = "all": the wildcard value "*" is a string literal; code-gap search misses the opening quote.
+[[rules]]
+name     = "py_django_allowed_hosts_wildcard"
+pattern  = "ALLOWED_HOSTS\\s*=\\s*\\[\\s*['\"][*]['\"]"
+scope    = "**"
+search   = "all"
+severity = "warning"
+message  = "ALLOWED_HOSTS=['*'] — accepts any HTTP Host header; enumerate the specific hostnames instead"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Hardcoded secrets
+# CWE-798
+# scope = "**": secrets can be hardcoded at module level (settings, constants).
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Hardcoded password assignment.
+[[rules]]
+name     = "py_hardcoded_password"
+pattern  = "(?i)(?:password|passwd|pwd)\\s*=\\s*['\"][^'\"]{4,}['\"]"
+scope    = "**"
+search   = "all"
+severity = "error"
+message  = "Hardcoded password — use environment variables or a secrets manager instead"
+
+# Hardcoded secret key assignment.
+[[rules]]
+name     = "py_hardcoded_secret_key"
+pattern  = "(?i)secret[_-]?key\\s*=\\s*['\"][^'\"]{8,}['\"]"
+scope    = "**"
+search   = "all"
+severity = "error"
+message  = "Hardcoded secret key — use environment variables or a secrets manager instead"

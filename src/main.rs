@@ -37,7 +37,7 @@ struct Args {
     paths: Vec<PathBuf>,
 
     /// File extensions to include (comma-separated)
-    #[arg(short, long, default_value = "c,cpp,cc,cxx,h,hpp,hh,cs,java,go,rs,kt,kts,swift")]
+    #[arg(short, long, default_value = "c,cpp,cc,cxx,h,hpp,hh,cs,java,go,rs,kt,kts,swift,py,pyw,pyi")]
     extensions: String,
 
     /// Print the scope tree for each file instead of running rules
@@ -208,8 +208,8 @@ fn main() -> Result<()> {
             // byte-index panics when source[1..] is indexed inside body_range.
             let source = raw.strip_prefix('\u{FEFF}').unwrap_or(&raw);
 
-            let lex     = lexer::Lexer::new(source).tokenize();
             let profile = profile_for_ext(ext);
+            let lex     = lexer::Lexer::new(source, profile.indentation_mode).tokenize();
             let tree    = ScopeParser::new(profile).parse(&lex.tokens, source.len());
 
             if args.dump_scopes {

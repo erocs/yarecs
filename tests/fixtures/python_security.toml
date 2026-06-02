@@ -1,0 +1,299 @@
+# Test fixtures for rules/python_security.toml
+# One [[case]] per rule: hit must fire the rule, miss must NOT fire that rule.
+#
+# Rules with scope = "**::*" require the snippet to be inside a named function.
+# The fixture runner writes the raw snippet to a temp .py file — so we wrap those
+# snippets in a minimal function body so the scope filter matches.
+
+rules_file = "rules/python_security.toml"
+ext        = "py"
+
+# ── Weak hash functions (scope = "**", no wrapper needed) ────────────────────
+
+[[case]]
+rule = "py_hashlib_md5"
+hit  = 'h = hashlib.md5(data)'
+miss = 'h = hashlib.sha256(data)'
+
+[[case]]
+rule = "py_hashlib_sha1"
+hit  = 'h = hashlib.sha1(data)'
+miss = 'h = hashlib.sha512(data)'
+
+[[case]]
+rule = "py_hashlib_new_weak"
+hit  = 'h = hashlib.new("md5", data)'
+miss = 'h = hashlib.new("sha256", data)'
+
+[[case]]
+rule = "py_hashlib_sha224"
+hit  = 'h = hashlib.sha224(data)'
+miss = 'h = hashlib.sha384(data)'
+
+# ── Weak ciphers (scope = "**", no wrapper needed) ───────────────────────────
+
+[[case]]
+rule = "py_pycrypto_des"
+hit  = 'cipher = DES.new(key)'
+miss = 'cipher = AES.new(key, AES.MODE_GCM)'
+
+[[case]]
+rule = "py_pycrypto_arc4"
+hit  = 'cipher = ARC4.new(key)'
+miss = 'cipher = AES.new(key, AES.MODE_GCM)'
+
+[[case]]
+rule = "py_pycrypto_blowfish"
+hit  = 'cipher = Blowfish.new(key)'
+miss = 'cipher = AES.new(key, AES.MODE_GCM)'
+
+[[case]]
+rule = "py_pycrypto_ecb_mode"
+hit  = 'cipher = AES.new(key, AES.MODE_ECB)'
+miss = 'cipher = AES.new(key, AES.MODE_GCM)'
+
+[[case]]
+rule = "py_cryptography_ecb"
+hit  = 'c = Cipher(algorithms.AES(key), modes.ECB())'
+miss = 'c = Cipher(algorithms.AES(key), modes.GCM(iv))'
+
+# ── Predictable RNG ───────────────────────────────────────────────────────────
+
+[[case]]
+rule = "py_random_module"
+hit  = 'import random'
+miss = 'import secrets'
+
+# py_random_seed is scope = "**::*" — wrap in a function
+[[case]]
+rule = "py_random_seed"
+hit  = """
+def setup():
+    random.seed(42)
+"""
+miss = 'token = secrets.token_bytes(32)'
+
+# ── Code injection (scope = "**::*") ─────────────────────────────────────────
+
+[[case]]
+rule = "py_eval"
+hit  = """
+def handle(request):
+    result = eval(user_input)
+"""
+miss = 'result = ast.literal_eval(user_input)'
+
+[[case]]
+rule = "py_exec"
+hit  = """
+def run(code):
+    exec(code)
+"""
+miss = 'subprocess.run(["python", "-c", code], check=True)'
+
+[[case]]
+rule = "py_compile_exec"
+hit  = """
+def build(src):
+    code = compile(src, "<string>", "exec")
+"""
+miss = 'tokens = list(tokenize.generate_tokens(io.StringIO(src).readline))'
+
+# ── Unsafe deserialization (scope = "**::*") ──────────────────────────────────
+
+[[case]]
+rule = "py_pickle_load"
+hit  = """
+def load_session(raw_bytes):
+    data = pickle.loads(raw_bytes)
+"""
+miss = 'data = json.loads(raw_bytes)'
+
+# py_yaml_load_unsafe: chain fires when Loader= is absent from the statement.
+# hit: yaml.load() with no Loader argument → should fire
+# miss: yaml.load() with Loader= in the same call → should NOT fire
+[[case]]
+rule = "py_yaml_load_unsafe"
+hit  = """
+def parse(stream):
+    cfg = yaml.load(stream)
+"""
+miss = """
+def parse(stream):
+    cfg = yaml.load(stream, Loader=yaml.SafeLoader)
+"""
+
+[[case]]
+rule = "py_jsonpickle_decode"
+hit  = """
+def deserialize(payload):
+    obj = jsonpickle.decode(payload)
+"""
+miss = 'obj = json.loads(payload)'
+
+[[case]]
+rule = "py_marshal_load"
+hit  = """
+def load_bytecode(buf):
+    data = marshal.loads(buf)
+"""
+miss = 'data = json.loads(buf)'
+
+[[case]]
+rule = "py_shelve_open"
+hit  = """
+def get_store():
+    db = shelve.open("mystore")
+"""
+miss = 'db = sqlite3.connect("mystore.db")'
+
+[[case]]
+rule = "py_dill_load"
+hit  = """
+def load_obj(buf):
+    obj = dill.loads(buf)
+"""
+miss = 'obj = json.loads(buf)'
+
+# ── Command injection (scope = "**::*") ──────────────────────────────────────
+
+[[case]]
+rule = "py_os_system"
+hit  = """
+def run_cmd(user_dir):
+    os.system("ls " + user_dir)
+"""
+miss = 'subprocess.run(["ls", user_dir], shell=False, check=True)'
+
+[[case]]
+rule = "py_subprocess_shell_true"
+hit  = """
+def execute(cmd):
+    subprocess.run(cmd, shell=True)
+"""
+miss = 'subprocess.run(cmd_list, shell=False)'
+
+[[case]]
+rule = "py_os_popen"
+hit  = """
+def read_output(path):
+    f = os.popen("ls " + path)
+"""
+miss = 'p = subprocess.run(["ls", path], capture_output=True)'
+
+[[case]]
+rule = "py_popen2"
+hit  = """
+def run_old(cmd):
+    i, o = popen2.popen2("command")
+"""
+miss = 'p = subprocess.run(["command"], capture_output=True)'
+
+# ── TLS / SSL misconfiguration (scope = "**::*") ─────────────────────────────
+
+[[case]]
+rule = "py_requests_verify_false"
+hit  = """
+def fetch(url):
+    resp = requests.get(url, verify=False)
+"""
+miss = 'resp = requests.get(url, verify="/etc/ssl/certs/ca-bundle.crt")'
+
+[[case]]
+rule = "py_ssl_no_check_hostname"
+hit  = """
+def make_context():
+    ctx.check_hostname = False
+"""
+miss = 'ctx = ssl.create_default_context()'
+
+[[case]]
+rule = "py_ssl_cert_none"
+hit  = """
+def make_context():
+    ctx.verify_mode = ssl.CERT_NONE
+"""
+miss = 'ctx.verify_mode = ssl.CERT_REQUIRED'
+
+[[case]]
+rule = "py_ssl_unverified_context"
+hit  = """
+def get_ctx():
+    ctx = ssl._create_unverified_context()
+"""
+miss = 'ctx = ssl.create_default_context()'
+
+[[case]]
+rule = "py_ssl_protocol_weak"
+hit  = """
+def get_ctx():
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLSv1)
+"""
+miss = 'ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)'
+
+# ── Insecure temporary files (scope = "**::*") ───────────────────────────────
+
+[[case]]
+rule = "py_tempfile_mktemp"
+hit  = """
+def write_tmp():
+    path = tempfile.mktemp(suffix=".tmp")
+"""
+miss = 'fd, path = tempfile.mkstemp(suffix=".tmp")'
+
+[[case]]
+rule = "py_os_tempnam"
+hit  = """
+def write_tmp():
+    path = os.tempnam("/tmp", "pfx")
+"""
+miss = 'fd, path = tempfile.mkstemp(prefix="pfx")'
+
+# ── XML / XXE ─────────────────────────────────────────────────────────────────
+
+[[case]]
+rule = "py_xml_stdlib"
+hit  = 'from xml.etree import ElementTree'
+miss = 'from defusedxml.ElementTree import parse'
+
+[[case]]
+rule = "py_lxml_resolve_entities"
+hit  = """
+def parse_xml():
+    parser = etree.XMLParser(resolve_entities=True)
+"""
+miss = 'parser = etree.XMLParser(resolve_entities=False)'
+
+# ── Web framework misconfigurations (scope = "**") ───────────────────────────
+
+[[case]]
+rule = "py_django_debug_true"
+hit  = 'DEBUG = True'
+miss = 'DEBUG = False'
+
+[[case]]
+rule = "py_flask_debug_true"
+hit  = 'app.run(host="0.0.0.0", debug=True)'
+miss = 'app.run(host="0.0.0.0", debug=False)'
+
+[[case]]
+rule = "py_jinja2_autoescape_off"
+hit  = 'env = Environment(autoescape=False)'
+miss = 'env = Environment(autoescape=select_autoescape())'
+
+[[case]]
+rule = "py_django_allowed_hosts_wildcard"
+hit  = 'ALLOWED_HOSTS = ["*"]'
+miss = 'ALLOWED_HOSTS = ["example.com", "www.example.com"]'
+
+# ── Hardcoded secrets (scope = "**") ─────────────────────────────────────────
+
+[[case]]
+rule = "py_hardcoded_password"
+hit  = 'password = "mysecretpassword"'
+miss = 'password = os.environ.get("APP_PASSWORD")'
+
+[[case]]
+rule = "py_hardcoded_secret_key"
+hit  = 'secret_key = "supersecretkey123"'
+miss = 'secret_key = os.environ.get("SECRET_KEY")'

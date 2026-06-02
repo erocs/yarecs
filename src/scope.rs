@@ -13,6 +13,15 @@
 //! Adding a new language requires only a new `static` profile — the PDA itself
 //! is language-agnostic.
 //!
+//! ## Python indentation mode
+//!
+//! When [`LanguageProfile::indentation_mode`] is `true` (Python), the PDA operates
+//! on [`TokenKind::Indent`] / [`TokenKind::Dedent`] tokens emitted by the lexer
+//! instead of `{` / `}`.  A [`TokenKind::Colon`] at bracket depth 0 marks the end of
+//! a compound-statement header (`def`, `class`, `if`, …); the subsequent `Indent`
+//! opens the scope and `Dedent` closes it.  `{` and `}` are treated as bracket
+//! delimiters (dict / set literals) rather than scope delimiters.
+//!
 //! Design constraints:
 //! - No full grammar — only enough to distinguish namespaces, classes/structs/unions,
 //!   enums, functions, and anonymous/control-flow blocks.
@@ -72,23 +81,28 @@ pub struct ScopeNode {
     pub kind: ScopeKind,
     /// Empty for anonymous / file-root scopes
     pub name: String,
-    /// Byte offset of the opening `{`
+    /// Byte offset of the opening `{` (brace mode) or first body byte (indent mode)
     pub body_start: usize,
-    /// Byte offset of the closing `}`
+    /// Byte offset of the closing `}` (brace mode) or first byte of dedented line (indent mode)
     pub body_end: usize,
-    /// 1-based line of `{`
+    /// 1-based line of the scope opener
     pub start_line: u32,
-    /// 1-based line of `}`
+    /// 1-based line of the scope closer
     pub end_line: u32,
     pub children: Vec<ScopeNode>,
+    /// `true` for Python indentation-based scopes — affects [`body_range`] calculation.
+    pub is_indented: bool,
 }
 
 impl ScopeNode {
     /// Byte range of the contents between `{` and `}` (exclusive of the braces).
     ///
     /// For the virtual `File` root there is no `{`, so the range starts at 0.
+    /// For Python indentation-based scopes the body starts at the `Indent` token
+    /// position (which precedes the leading whitespace of the first body line), so
+    /// no `+1` skip is needed — the delimiter is zero-width.
     pub fn body_range(&self) -> std::ops::Range<usize> {
-        if self.kind == ScopeKind::File {
+        if self.kind == ScopeKind::File || self.is_indented {
             self.body_start..self.body_end
         } else {
             self.body_start + 1..self.body_end
@@ -133,6 +147,14 @@ const CONTROL_FLOW_KOTLIN: &[&str] = &[
     "if", "else", "for", "while", "do", "when", "try", "catch",
 ];
 
+/// Control-flow keywords for Python.
+/// `match`/`case` are structural pattern matching keywords (Python 3.10+).
+const CONTROL_FLOW_PYTHON: &[&str] = &[
+    "if", "elif", "else", "for", "while", "with",
+    "try", "except", "finally", "async", "await",
+    "match", "case",
+];
+
 /// Per-language description of which keywords introduce named scopes and functions.
 ///
 /// All profiles share the same PDA logic; only the keyword tables differ.
@@ -158,6 +180,10 @@ pub struct LanguageProfile {
     /// Keywords that open anonymous control-flow blocks.  If the first word of a
     /// header matches one of these the scope is classified as [`ScopeKind::Block`].
     pub control_flow: &'static [&'static str],
+
+    /// When `true`, the PDA uses `Indent`/`Dedent` tokens and `:` as scope
+    /// delimiters instead of `{` / `}`.  Set only for Python.
+    pub indentation_mode: bool,
 }
 
 // C and C++ (also used as the fallback for unknown extensions)
@@ -169,8 +195,9 @@ pub static PROFILE_C: LanguageProfile = LanguageProfile {
         ("union",     ScopeKind::Union),
         ("interface", ScopeKind::Interface),
     ],
-    fn_keywords:  &[],
-    control_flow: CONTROL_FLOW_C,
+    fn_keywords:      &[],
+    control_flow:     CONTROL_FLOW_C,
+    indentation_mode: false,
 };
 
 // C# — same as C/C++ but adds `record` (C# 9+) and drops `union`
@@ -183,8 +210,9 @@ pub static PROFILE_CSHARP: LanguageProfile = LanguageProfile {
         ("enum",      ScopeKind::Enum),
         ("record",    ScopeKind::Class),
     ],
-    fn_keywords:  &[],
-    control_flow: CONTROL_FLOW_COMMON,
+    fn_keywords:      &[],
+    control_flow:     CONTROL_FLOW_COMMON,
+    indentation_mode: false,
 };
 
 // Java — no namespaces (package is a directive, not a brace scope)
@@ -194,8 +222,9 @@ pub static PROFILE_JAVA: LanguageProfile = LanguageProfile {
         ("interface", ScopeKind::Interface),
         ("enum",      ScopeKind::Enum),
     ],
-    fn_keywords:  &[],
-    control_flow: CONTROL_FLOW_COMMON,
+    fn_keywords:      &[],
+    control_flow:     CONTROL_FLOW_COMMON,
+    indentation_mode: false,
 };
 
 // Go — structs/interfaces use `type Name keyword { }` order (name before keyword)
@@ -204,8 +233,9 @@ pub static PROFILE_GO: LanguageProfile = LanguageProfile {
         ("struct",    ScopeKind::Struct),
         ("interface", ScopeKind::Interface),
     ],
-    fn_keywords:  &["func"],
-    control_flow: CONTROL_FLOW_GO,
+    fn_keywords:      &["func"],
+    control_flow:     CONTROL_FLOW_GO,
+    indentation_mode: false,
 };
 
 // Rust — `mod` ≈ namespace, `impl`/`trait` ≈ class-like, `fn` introduces functions
@@ -218,8 +248,9 @@ pub static PROFILE_RUST: LanguageProfile = LanguageProfile {
         ("enum",  ScopeKind::Enum),
         ("union", ScopeKind::Union),
     ],
-    fn_keywords:  &["fn"],
-    control_flow: CONTROL_FLOW_COMMON,
+    fn_keywords:      &["fn"],
+    control_flow:     CONTROL_FLOW_COMMON,
+    indentation_mode: false,
 };
 
 // Kotlin — `object` declarations behave like singleton classes
@@ -230,8 +261,9 @@ pub static PROFILE_KOTLIN: LanguageProfile = LanguageProfile {
         ("object",    ScopeKind::Class),
         ("enum",      ScopeKind::Enum),
     ],
-    fn_keywords:  &["fun"],
-    control_flow: CONTROL_FLOW_KOTLIN,
+    fn_keywords:      &["fun"],
+    control_flow:     CONTROL_FLOW_KOTLIN,
+    indentation_mode: false,
 };
 
 // Swift — `extension` lets you add methods to existing types outside their definition
@@ -243,21 +275,34 @@ pub static PROFILE_SWIFT: LanguageProfile = LanguageProfile {
         ("protocol",  ScopeKind::Interface),
         ("extension", ScopeKind::Class),
     ],
-    fn_keywords:  &["func"],
-    control_flow: CONTROL_FLOW_SWIFT,
+    fn_keywords:      &["func"],
+    control_flow:     CONTROL_FLOW_SWIFT,
+    indentation_mode: false,
+};
+
+// Python — indentation-scoped; `def`/`class` use `:` + INDENT instead of `{}`.
+// In indentation_mode the PDA uses Indent/Dedent tokens from the lexer.
+pub static PROFILE_PYTHON: LanguageProfile = LanguageProfile {
+    scope_keywords: &[
+        ("class", ScopeKind::Class),
+    ],
+    fn_keywords:      &["def"],
+    control_flow:     CONTROL_FLOW_PYTHON,
+    indentation_mode: true,
 };
 
 /// Select the language profile for a given file extension.
 /// Falls back to [`PROFILE_C`] for any unrecognised extension.
 pub fn profile_for_ext(ext: &str) -> &'static LanguageProfile {
     match ext {
-        "cs"           => &PROFILE_CSHARP,
-        "java"         => &PROFILE_JAVA,
-        "go"           => &PROFILE_GO,
-        "rs"           => &PROFILE_RUST,
-        "kt" | "kts"   => &PROFILE_KOTLIN,
-        "swift"        => &PROFILE_SWIFT,
-        _              => &PROFILE_C,
+        "cs"                 => &PROFILE_CSHARP,
+        "java"               => &PROFILE_JAVA,
+        "go"                 => &PROFILE_GO,
+        "rs"                 => &PROFILE_RUST,
+        "kt" | "kts"         => &PROFILE_KOTLIN,
+        "swift"              => &PROFILE_SWIFT,
+        "py" | "pyw" | "pyi" => &PROFILE_PYTHON,
+        _                    => &PROFILE_C,
     }
 }
 
@@ -321,7 +366,7 @@ fn classify_header(header: &[Token], profile: &LanguageProfile) -> (ScopeKind, S
         }
     }
 
-    // Check for fn keywords (func / fn / fun / …).  These are scanned against the
+    // Check for fn keywords (func / fn / fun / def / …).  These are scanned against the
     // full token list (not just words) so that find_fn_name_after can skip receivers.
     for (i, token) in header.iter().enumerate() {
         if let TokenKind::Word(w) = &token.kind {
@@ -419,6 +464,7 @@ struct ScopeFrame {
     body_start: usize,
     start_line: u32,
     children: Vec<ScopeNode>,
+    is_indented: bool,
 }
 
 /// Parses a flat token stream into a `ScopeNode` tree using a pushdown automaton.
@@ -429,6 +475,12 @@ pub struct ScopeParser {
     /// Tokens accumulated since the last block delimiter (`{`, `}`) or `;`
     header: Vec<Token>,
     header_start: usize,
+    /// Depth of `( ) { }` brackets within the current header — used in Python mode
+    /// to detect when a `:` is at the outermost level of a compound statement.
+    header_paren_depth: i32,
+    /// Python: header saved at the `:` token; waiting for the next `Indent` to push frame.
+    awaiting_python_indent: bool,
+    saved_header: Vec<Token>,
 }
 
 impl ScopeParser {
@@ -438,6 +490,9 @@ impl ScopeParser {
             stack: Vec::new(),
             header: Vec::new(),
             header_start: 0,
+            header_paren_depth: 0,
+            awaiting_python_indent: false,
+            saved_header: Vec::new(),
         }
     }
 
@@ -454,6 +509,7 @@ impl ScopeParser {
             body_start: 0,
             start_line: 1,
             children: Vec::new(),
+            is_indented: false,
         });
 
         for token in tokens {
@@ -462,46 +518,146 @@ impl ScopeParser {
                 TokenKind::Comment | TokenKind::Preprocessor | TokenKind::StringLiteral => {}
 
                 TokenKind::Semicolon => {
+                    // Clear header between statements.
+                    // In Python mode, do NOT cancel awaiting_python_indent here — the
+                    // Semicolon emitted on the `\n` after `def foo():` must not discard
+                    // the pending scope.
                     self.header.clear();
                     self.header_start = token.end;
                 }
 
-                TokenKind::OpenBrace => {
-                    let (kind, name) = classify_header(&self.header, self.profile);
-
-                    self.stack.push(ScopeFrame {
-                        kind,
-                        name,
-                        body_start: token.start,
-                        start_line: token.line,
-                        children: Vec::new(),
-                    });
-
-                    self.header.clear();
+                // ── Python: Colon as scope-header terminator ─────────────────
+                TokenKind::Colon if self.profile.indentation_mode
+                                 && self.header_paren_depth == 0 =>
+                {
+                    // End of a Python compound-statement header (`def f():`, `class C:`,
+                    // `if cond:`, etc.).  Save the header and wait for the Indent token.
+                    self.saved_header = std::mem::take(&mut self.header);
+                    self.awaiting_python_indent = true;
                     self.header_start = token.end;
                 }
 
-                TokenKind::CloseBrace => {
+                // ── Python: Indent opens a new scope ────────────────────────
+                TokenKind::Indent if self.profile.indentation_mode => {
+                    if self.awaiting_python_indent {
+                        let (kind, name) = classify_header(&self.saved_header, self.profile);
+                        self.stack.push(ScopeFrame {
+                            kind,
+                            name,
+                            body_start: token.start,
+                            start_line: token.line,
+                            children: Vec::new(),
+                            is_indented: true,
+                        });
+                        self.awaiting_python_indent = false;
+                        self.saved_header.clear();
+                    }
+                    // If not awaiting (shouldn't occur normally), ignore.
+                }
+
+                // ── Python: Dedent closes the current scope ──────────────────
+                TokenKind::Dedent if self.profile.indentation_mode => {
+                    // Cancel any pending one-liner scope (arrived without seeing Indent)
+                    self.awaiting_python_indent = false;
+                    self.saved_header.clear();
+
                     if self.stack.len() > 1 {
                         let frame = self.stack.pop().unwrap();
                         let node = ScopeNode {
-                            kind: frame.kind,
-                            name: frame.name,
+                            kind:       frame.kind,
+                            name:       frame.name,
                             body_start: frame.body_start,
-                            body_end: token.start,
+                            body_end:   token.start,
                             start_line: frame.start_line,
-                            end_line: token.line,
-                            children: frame.children,
+                            end_line:   token.line,
+                            children:   frame.children,
+                            is_indented: frame.is_indented,
                         };
                         self.stack.last_mut().unwrap().children.push(node);
                     }
-                    // Unbalanced `}` at stack depth 1 is silently absorbed
-
                     self.header.clear();
                     self.header_start = token.end;
                 }
 
+                // ── OpenBrace ────────────────────────────────────────────────
+                TokenKind::OpenBrace => {
+                    if self.profile.indentation_mode {
+                        // Python: { } are dict/set literals, not scope delimiters.
+                        // Track bracket depth so inner `:` tokens don't trigger scopes.
+                        self.header_paren_depth += 1;
+                        if self.header.is_empty() { self.header_start = token.start; }
+                        self.header.push(token.clone());
+                    } else {
+                        // C-like languages: original brace-scope behavior.
+                        let (kind, name) = classify_header(&self.header, self.profile);
+                        self.stack.push(ScopeFrame {
+                            kind,
+                            name,
+                            body_start: token.start,
+                            start_line: token.line,
+                            children: Vec::new(),
+                            is_indented: false,
+                        });
+                        self.header.clear();
+                        self.header_start = token.end;
+                    }
+                }
+
+                // ── CloseBrace ───────────────────────────────────────────────
+                TokenKind::CloseBrace => {
+                    if self.profile.indentation_mode {
+                        // Python: matching close of a dict/set literal.
+                        if self.header_paren_depth > 0 { self.header_paren_depth -= 1; }
+                        if self.header.is_empty() { self.header_start = token.start; }
+                        self.header.push(token.clone());
+                    } else {
+                        // C-like languages: original brace-scope behavior.
+                        if self.stack.len() > 1 {
+                            let frame = self.stack.pop().unwrap();
+                            let node = ScopeNode {
+                                kind:       frame.kind,
+                                name:       frame.name,
+                                body_start: frame.body_start,
+                                body_end:   token.start,
+                                start_line: frame.start_line,
+                                end_line:   token.line,
+                                children:   frame.children,
+                                is_indented: false,
+                            };
+                            self.stack.last_mut().unwrap().children.push(node);
+                        }
+                        // Unbalanced `}` at stack depth 1 is silently absorbed
+
+                        self.header.clear();
+                        self.header_start = token.end;
+                    }
+                }
+
+                // ── OpenParen / CloseParen ────────────────────────────────────
+                // Track bracket depth for Python `:` detection.  These tokens are
+                // always pushed to the header so classify_header can find function
+                // names (e.g. C-style `last word before '('`).
+                TokenKind::OpenParen => {
+                    self.header_paren_depth += 1;
+                    if self.header.is_empty() { self.header_start = token.start; }
+                    self.header.push(token.clone());
+                }
+                TokenKind::CloseParen => {
+                    if self.header_paren_depth > 0 { self.header_paren_depth -= 1; }
+                    if self.header.is_empty() { self.header_start = token.start; }
+                    self.header.push(token.clone());
+                }
+
+                // ── Default: accumulate in header ────────────────────────────
                 _ => {
+                    // In Python mode, a non-Indent/Semicolon token arriving while
+                    // we're awaiting an Indent means this was a one-liner (e.g.
+                    // `def foo(): pass`).  Discard the pending scope — the body is
+                    // scanned at the parent scope level.
+                    if self.profile.indentation_mode && self.awaiting_python_indent {
+                        self.awaiting_python_indent = false;
+                        self.saved_header.clear();
+                    }
                     if self.header.is_empty() {
                         self.header_start = token.start;
                     }
@@ -510,30 +666,32 @@ impl ScopeParser {
             }
         }
 
-        // Recover from unclosed braces (malformed input)
+        // Recover from unclosed scopes (malformed or EOF-terminated input)
         while self.stack.len() > 1 {
             let frame = self.stack.pop().unwrap();
             let node = ScopeNode {
-                kind: frame.kind,
-                name: frame.name,
+                kind:       frame.kind,
+                name:       frame.name,
                 body_start: frame.body_start,
-                body_end: source_len,
+                body_end:   source_len,
                 start_line: frame.start_line,
-                end_line: 0,
-                children: frame.children,
+                end_line:   0,
+                children:   frame.children,
+                is_indented: frame.is_indented,
             };
             self.stack.last_mut().unwrap().children.push(node);
         }
 
         let root = self.stack.pop().unwrap();
         ScopeNode {
-            kind: ScopeKind::File,
-            name: String::new(),
+            kind:       ScopeKind::File,
+            name:       String::new(),
             body_start: 0,
-            body_end: source_len,
+            body_end:   source_len,
             start_line: 1,
-            end_line: 0,
-            children: root.children,
+            end_line:   0,
+            children:   root.children,
+            is_indented: false,
         }
     }
 }

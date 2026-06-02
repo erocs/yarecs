@@ -784,8 +784,9 @@ mod tests {
     }
 
     fn run(source: &str, rules: &[Rule]) -> Vec<ScanMatch> {
-        let lex  = Lexer::new(source).tokenize();
-        let tree = ScopeParser::new(crate::scope::profile_for_ext("cpp")).parse(&lex.tokens, source.len());
+        let profile = crate::scope::profile_for_ext("cpp");
+        let lex  = Lexer::new(source, profile.indentation_mode).tokenize();
+        let tree = ScopeParser::new(profile).parse(&lex.tokens, source.len());
         scan_file(source, Path::new("test.cpp"), &tree, rules, &lex)
     }
 
@@ -818,8 +819,9 @@ mod tests {
 
     /// Like `run` but uses the profile for `ext` instead of C++.
     fn run_for_lang(source: &str, rules: &[Rule], ext: &str) -> Vec<ScanMatch> {
-        let lex  = Lexer::new(source).tokenize();
-        let tree = ScopeParser::new(crate::scope::profile_for_ext(ext)).parse(&lex.tokens, source.len());
+        let profile = crate::scope::profile_for_ext(ext);
+        let lex  = Lexer::new(source, profile.indentation_mode).tokenize();
+        let tree = ScopeParser::new(profile).parse(&lex.tokens, source.len());
         scan_file(source, Path::new(&format!("test.{ext}")), &tree, rules, &lex)
     }
 
@@ -1577,6 +1579,81 @@ public:
         let ms = run_single_lang(src, "MyApp::Point::Length", "NEEDLE", "cs");
         assert_eq!(ms.len(), 1);
         assert_eq!(ms[0].scope_path, vec!["MyApp", "Point", "Length"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Python indentation scopes
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn python_class_and_method_scopes() {
+        let src = "\
+class Foo:
+    def bar(self):
+        NEEDLE()
+    def baz(self):
+        OTHER()
+";
+        // Rule scoped to Foo::bar — should only match bar's body
+        let ms = run_single_lang(src, "Foo::bar", "NEEDLE", "py");
+        assert_eq!(ms.len(), 1);
+        assert_eq!(ms[0].scope_path, vec!["Foo", "bar"]);
+
+        // Rule scoped to Foo::baz — should NOT match NEEDLE
+        let ms2 = run_single_lang(src, "Foo::baz", "NEEDLE", "py");
+        assert_eq!(ms2.len(), 0);
+    }
+
+    #[test]
+    fn python_nested_def_scopes() {
+        let src = "\
+def outer():
+    def inner():
+        NEEDLE()
+    OTHER()
+";
+        let ms = run_single_lang(src, "**::inner", "NEEDLE", "py");
+        assert_eq!(ms.len(), 1);
+        assert_eq!(ms[0].scope_path, vec!["outer", "inner"]);
+    }
+
+    #[test]
+    fn python_control_flow_is_anon_block() {
+        // `if` / `for` create anonymous Block scopes; they don't appear in scope_path.
+        let src = "\
+def process():
+    for item in items:
+        NEEDLE()
+";
+        let ms = run_single_lang(src, "**::process", "NEEDLE", "py");
+        assert_eq!(ms.len(), 1);
+        // The for-block is anonymous; scope_path shows only the named enclosing fn.
+        assert_eq!(ms[0].scope_path, vec!["process"]);
+    }
+
+    #[test]
+    fn python_dict_literal_colon_not_scope() {
+        // Colons inside dict literals must not open spurious scopes.
+        let src = "\
+def safe():
+    d = {\"key\": NEEDLE()}
+";
+        let ms = run_single_lang(src, "**::safe", "NEEDLE", "py");
+        assert_eq!(ms.len(), 1);
+        assert_eq!(ms[0].scope_path, vec!["safe"]);
+    }
+
+    #[test]
+    fn python_one_liner_body_at_parent_scope() {
+        // `def foo(): pass` — one-liner; body not in a named sub-scope.
+        // The function itself does not appear as a scope because Indent never fires.
+        let src = "\
+def foo(): pass
+NEEDLE()
+";
+        // NEEDLE is at file scope; a filter for "foo" should not match it.
+        let ms = run_single_lang(src, "**::foo", "NEEDLE", "py");
+        assert_eq!(ms.len(), 0);
     }
 
     // -----------------------------------------------------------------------
