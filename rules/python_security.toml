@@ -448,3 +448,242 @@ scope    = "**"
 search   = "all"
 severity = "error"
 message  = "Hardcoded secret key — use environment variables or a secrets manager instead"
+
+# Hardcoded password as a function default argument.
+# def connect(..., password="s3cr3t", ...) embeds a credential that cannot be rotated
+# without a code change and is visible to anyone reading the source.
+[[rules]]
+name     = "py_hardcoded_password_default"
+pattern  = "(?i)def\\s+\\w+\\s*\\(.*(?:password|passwd|pwd)\\s*=\\s*['\"][^'\"]{4,}['\"]"
+scope    = "**"
+search   = "all"
+severity = "error"
+message  = "Hardcoded password in function default — use None as the default and require the caller to supply a credential from an environment variable or secrets manager"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Path traversal
+# CWE-22
+# ══════════════════════════════════════════════════════════════════════════════
+
+# tarfile.extractall() without a members= or filter= guard extracts every entry,
+# including paths with ../ that can escape the destination directory.
+[[rules]]
+name     = "py_tarfile_extractall"
+pattern  = '\.extractall\s*\('
+scope    = "**::*"
+search   = "code"
+severity = "error"
+message  = "tarfile.extractall() — extracts all paths including '../' traversal sequences; pass a members= filter or use extractall(filter='data') (Python 3.12+)"
+chain    = [
+    { pattern = '\b(?:members|filter)\s*=', relationship = "anywhere_in_statement", negate = true },
+]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ML-framework deserialization (pickle-backed)
+# CWE-502
+# ══════════════════════════════════════════════════════════════════════════════
+
+# torch.load() deserializes with pickle by default; malicious .pt/.pth files
+# execute arbitrary Python on load.
+[[rules]]
+name     = "py_torch_load"
+pattern  = '\btorch\.load\s*\('
+scope    = "**::*"
+search   = "code"
+severity = "error"
+message  = "torch.load() — uses pickle by default; load only files from trusted sources, or pass weights_only=True (PyTorch >= 1.13) to restrict to tensors"
+
+# numpy.load() with allow_pickle=True re-enables pickle deserialization of .npy/.npz
+# files; off by default since NumPy 1.16.3.
+[[rules]]
+name     = "py_numpy_load_pickle"
+pattern  = '\ballow_pickle\s*=\s*True\b'
+scope    = "**::*"
+search   = "code"
+severity = "error"
+message  = "allow_pickle=True — re-enables pickle deserialization in numpy.load(); load only files from trusted sources or use allow_pickle=False"
+
+# joblib.load() is the standard way to persist scikit-learn models and uses pickle
+# internally; loading untrusted files executes arbitrary Python.
+[[rules]]
+name     = "py_joblib_load"
+pattern  = '\bjoblib\.load\s*\('
+scope    = "**::*"
+search   = "code"
+severity = "error"
+message  = "joblib.load() — backed by pickle; deserializing untrusted model files executes arbitrary Python; load only files from trusted sources"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Predictable identifiers
+# CWE-338
+# ══════════════════════════════════════════════════════════════════════════════
+
+# uuid.uuid1() embeds the host MAC address and a timestamp; the output is
+# partially predictable and leaks network identity.
+[[rules]]
+name     = "py_uuid1"
+pattern  = '\buuid\.uuid1\s*\('
+scope    = "**::*"
+search   = "code"
+severity = "warning"
+message  = "uuid.uuid1() — encodes MAC address and timestamp; predictable and leaks host identity; use uuid.uuid4() for random UUIDs"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SSH host-key trust (paramiko)
+# CWE-295
+# ══════════════════════════════════════════════════════════════════════════════
+
+# AutoAddPolicy silently accepts any host key presented by the server, making
+# all SSH connections transparent to a man-in-the-middle attacker.
+[[rules]]
+name     = "py_paramiko_auto_add_policy"
+pattern  = '\bAutoAddPolicy\s*\(\s*\)'
+scope    = "**::*"
+search   = "code"
+severity = "error"
+message  = "paramiko AutoAddPolicy — silently trusts any SSH host key; use RejectPolicy and maintain a known_hosts file, or verify the fingerprint explicitly"
+
+# WarningPolicy logs unknown keys but still connects; equivalent to AutoAddPolicy
+# for an attacker who controls the network.
+[[rules]]
+name     = "py_paramiko_warning_policy"
+pattern  = '\bWarningPolicy\s*\(\s*\)'
+scope    = "**::*"
+search   = "code"
+severity = "warning"
+message  = "paramiko WarningPolicy — accepts unknown SSH host keys after logging; use RejectPolicy and maintain a known_hosts file"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Unencrypted network protocol
+# CWE-319
+# ══════════════════════════════════════════════════════════════════════════════
+
+# telnetlib transmits all data including credentials in cleartext.
+[[rules]]
+name     = "py_telnetlib"
+pattern  = '\bimport\s+telnetlib\b'
+scope    = "**"
+search   = "all"
+severity = "error"
+message  = "telnetlib — transmits credentials and data in cleartext; use paramiko or asyncssh over SSH instead"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DataFrame code injection (pandas)
+# CWE-95
+# ══════════════════════════════════════════════════════════════════════════════
+
+# DataFrame.eval() and DataFrame.query() parse and execute Python expressions;
+# user-controlled input enables arbitrary code execution via the numexpr backend.
+[[rules]]
+name     = "py_pandas_eval"
+pattern  = '\.\s*(?:eval|query)\s*\('
+scope    = "**::*"
+search   = "code"
+severity = "warning"
+message  = "DataFrame.eval()/query() — executes Python expressions; user-controlled input leads to arbitrary code execution; validate and whitelist inputs"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Dynamic global and module access
+# CWE-95, CWE-470
+# ══════════════════════════════════════════════════════════════════════════════
+
+# globals()[user_key] lets a caller read or write arbitrary module-level names,
+# including functions and class references.
+[[rules]]
+name     = "py_globals_dynamic"
+pattern  = '\bglobals\s*\(\s*\)\s*\['
+scope    = "**::*"
+search   = "code"
+severity = "error"
+message  = "globals()[...] — dynamic attribute access on the global namespace; use an explicit dispatch table instead"
+
+# importlib.import_module() with a variable argument loads an arbitrary module;
+# user-controlled input enables code execution via malicious module names.
+[[rules]]
+name     = "py_importlib_dynamic"
+pattern  = '\bimportlib\.import_module\s*\('
+scope    = "**::*"
+search   = "code"
+severity = "warning"
+message  = "importlib.import_module() — loads an arbitrary module by name; validate the name against an allowlist if the value derives from user input"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Additional OS-level process execution
+# CWE-78
+# ══════════════════════════════════════════════════════════════════════════════
+
+# os.execl/execv/execlp/... replace the current process image; if the executable
+# path or argument is user-controlled the result is OS command injection.
+[[rules]]
+name     = "py_os_exec_family"
+pattern  = '\bos\.exec(?:l|le|lp|v|ve|vp|vpe)\s*\('
+scope    = "**::*"
+search   = "code"
+severity = "error"
+message  = "os.exec*() — replaces the current process; verify executable path and arguments are not user-controlled"
+
+# os.spawnl/spawnv/... launch a child process; same injection risk as os.exec*.
+[[rules]]
+name     = "py_os_spawn_family"
+pattern  = '\bos\.spawn(?:l|le|lp|v|ve|vp|vpe)\s*\('
+scope    = "**::*"
+search   = "code"
+severity = "error"
+message  = "os.spawn*() — spawns a child process; verify executable path and arguments are not user-controlled; prefer subprocess.run([...], shell=False)"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SSL default-context override
+# CWE-295
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Assigning ssl._create_unverified_context to ssl._create_default_https_context
+# globally disables certificate verification for every subsequent HTTPS connection
+# in the process, including third-party libraries.
+[[rules]]
+name     = "py_ssl_default_https_override"
+pattern  = '\bssl\._create_default_https_context\s*='
+scope    = "**"
+search   = "code"
+severity = "error"
+message  = "ssl._create_default_https_context override — globally disables HTTPS certificate verification for the entire process; remove this assignment"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# urllib SSRF / local file read
+# CWE-918, CWE-73
+# ══════════════════════════════════════════════════════════════════════════════
+
+# urllib.request.urlopen() follows file:// and ftp:// URLs in addition to http://;
+# user-controlled URLs enable SSRF and local file disclosure.
+[[rules]]
+name     = "py_urllib_urlopen"
+pattern  = '\burllib(?:\.request)?\.urlopen\s*\('
+scope    = "**::*"
+search   = "code"
+severity = "warning"
+message  = "urllib.urlopen() — follows file:// and ftp:// schemes; validate and restrict URL schemes when the URL derives from user input"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Interactive Python interpreter
+# CWE-95
+# ══════════════════════════════════════════════════════════════════════════════
+
+# code.interact() and code.InteractiveConsole drop into a live Python REPL on
+# the server; calling these inside a request handler gives the caller a root shell.
+[[rules]]
+name     = "py_code_interact"
+pattern  = '\bcode\.(?:interact|InteractiveConsole|InteractiveInterpreter)\s*\('
+scope    = "**::*"
+search   = "code"
+severity = "error"
+message  = "code.interact()/InteractiveConsole — opens a live Python REPL; never call from a request handler or any user-reachable code path"
