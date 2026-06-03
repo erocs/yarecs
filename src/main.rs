@@ -160,7 +160,8 @@ fn main() -> Result<()> {
             .into_iter()
             .filter_entry(|e| {
                 // Prune excluded and dot directories before descending into them.
-                if e.file_type().is_dir() {
+                // Skip the depth-0 root entry so paths like "." work correctly.
+                if e.file_type().is_dir() && e.depth() > 0 {
                     if let Some(name) = e.file_name().to_str() {
                         if name.starts_with('.') {
                             return false;
